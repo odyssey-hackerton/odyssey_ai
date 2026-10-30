@@ -1,0 +1,95 @@
+name: convention-check
+
+# 규칙은 .githooks/lib/rules.sh 와 동일하게 유지할 것
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  create:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  convention-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check branch / PR / commit conventions
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const PROTECTED = ['main', 'dev'];
+            const WORK = /^(feature|fix|refactor|docs|chore|test|ci)\/([0-9]+-)?[a-z0-9]+(-[a-z0-9]+)*$/;
+            const HOTFIX = /^hotfix\/([0-9]+-)?[a-z0-9]+(-[a-z0-9]+)*$/;
+            const RELEASE = /^release\/v[0-9]+\.[0-9]+\.[0-9]+$/;
+            const HEADER = /^(feat|fix|refactor|docs|style|test|chore|perf|ci|build|revert)(\([a-z0-9-]+\))?!?: \S.*$/;
+            const HEADER_MAX = 72;
+            const SKIP = /^(Merge |Revert "|fixup! |squash! |amend! )/;
+
+            const isValidBranch = (b) =>
+              PROTECTED.includes(b) || WORK.test(b) || HOTFIX.test(b) || RELEASE.test(b);
+            const headerError = (h) => {
+              if (!HEADER.test(h)) return '형식이 <type>(<scope>): <subject> 가 아닙니다';
+              if ([...h].length > HEADER_MAX) return `${HEADER_MAX}자를 넘습니다 (${[...h].length}자)`;
+              if (h.endsWith('.')) return '끝에 마침표를 쓰지 않습니다';
+              return null;
+            };
+            const BRANCH_HELP = '규칙: <type>/<이슈번호>-<짧은-설명> (feature|fix|refactor|docs|chore|test|ci|hotfix), release/vX.Y.Z';
+
+            const errors = [];
+
+            if (context.eventName === 'create') {
+              if (context.payload.ref_type !== 'branch') return;
+              const b = context.payload.ref;
+              if (!isValidBranch(b)) errors.push(`브랜치 이름 위반: '${b}'. ${BRANCH_HELP}`);
+            }
+
+            if (context.eventName === 'pull_request') {
+              const pr = context.payload.pull_request;
+              const head = pr.head.ref;
+              const base = pr.base.ref;
+
+              // 1) 브랜치 이름
+              if (!isValidBranch(head)) errors.push(`브랜치 이름 위반: '${head}'. ${BRANCH_HELP}`);
+
+              // 2) 대상 브랜치 규칙
+              if (base === 'main') {
+                if (!(head === 'dev' || RELEASE.test(head) || HOTFIX.test(head)))
+                  errors.push(`main으로는 dev, release/*, hotfix/* 만 PR할 수 있습니다 (현재: ${head})`);
+              } else if (base === 'dev') {
+                if (!(WORK.test(head) || RELEASE.test(head) || HOTFIX.test(head)))
+                  errors.push(`dev로는 작업 브랜치(feature/* 등), release/*, hotfix/* 만 PR할 수 있습니다 (현재: ${head})`);
+              } else {
+                errors.push(`PR 대상은 main 또는 dev 여야 합니다 (현재: ${base})`);
+              }
+
+              // 3) PR 제목
+              const titleErr = headerError(pr.title.trim());
+              if (titleErr) errors.push(`PR 제목 위반: ${titleErr} — "${pr.title}"`);
+
+              // 4) PR 안의 모든 커밋 메시지
+              const commits = await github.paginate(github.rest.pulls.listCommits, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              });
+              for (const c of commits) {
+                if (c.parents.length > 1) continue; // merge commit
+                const h = c.commit.message.split('\n')[0].trim();
+                if (SKIP.test(h)) continue;
+                const err = headerError(h);
+                if (err) errors.push(`커밋 ${c.sha.slice(0, 7)} 메시지 위반: ${err} — "${h}"`);
+              }
+            }
+
+            if (errors.length) {
+              await core.summary
+                .addHeading('Convention check failed')
+                .addList(errors)
+                .addRaw('자세한 규칙은 CONTRIBUTING.md 를 확인하세요.')
+                .write();
+              core.setFailed(errors.join('\n'));
+            } else {
+              core.info('All conventions passed');
+            }

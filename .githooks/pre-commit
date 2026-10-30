@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# 규칙에 맞지 않는 브랜치에서는 커밋 금지 (git branch -m 으로 이름을 바꾼 경우 대비)
+. "$(dirname "$0")/lib/rules.sh"
+
+branch=$(git symbolic-ref --short -q HEAD) || exit 0   # detached HEAD는 통과
+if ! is_valid_branch "$branch"; then
+  echo "✖ 현재 브랜치 이름이 규칙에 맞지 않아 커밋할 수 없습니다: '$branch'" >&2
+  echo "  git branch -m <올바른-이름> 으로 이름을 바꾼 뒤 다시 커밋하세요." >&2
+  print_branch_help
+  exit 1
+fi
+exit 0
