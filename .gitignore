@@ -1,0 +1,22 @@
+# 환경변수·비밀값
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# 모델 가중치는 이미지 빌드나 다운로드로 받는다
+models/
+*.pt
+*.onnx
+*.pdparams
+
+# 편집기·OS
+.idea/
+.vscode/
+.DS_Store
