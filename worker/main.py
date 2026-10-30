@@ -1,0 +1,188 @@
+"""AI 워커. 일반 서버의 Redis `jobs` 에서 작업을 가져와 처리하고 `results` 로 결과를 보낸다.
+
+    python -m worker.main
+
+GPU 서버는 Redis(일반 서버 사설 IP)와 S3에만 접속한다. Postgres에는 접속하지 않는다.
+원본 글·사진, presigned URL은 로그에 남기지 않는다.
+"""
+
+import asyncio
+import contextlib
+import logging
+import signal
+from pathlib import PurePosixPath
+
+from pydantic import ValidationError
+from redis.asyncio import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import ResponseError
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
+from stages.types import Media
+from worker.config import Settings, get_settings
+from worker.contract import JobMessage, JobStatus, ResultMessage
+from worker.pipeline import run_pipeline
+from worker.queue import create_redis, ensure_group, send_result, set_progress
+from worker.storage import Storage, result_key
+
+logger = logging.getLogger("worker")
+
+CONTENT_TYPES = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
+CLAIM_CHECK_SECONDS = 60
+RETRY_SECONDS = 5
+
+
+async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(stop.wait(), seconds)
+
+
+async def process(
+    redis: Redis, storage: Storage, settings: Settings, msg: JobMessage
+) -> ResultMessage:
+    job_id = str(msg.job_id)
+
+    async def report(status: JobStatus, iteration: int = 0, message: str | None = None) -> None:
+        await set_progress(
+            redis,
+            job_id,
+            status,
+            iteration=iteration,
+            message=message,
+            ttl_seconds=settings.progress_ttl_seconds,
+        )
+
+    media = Media(text=msg.text)
+    if msg.object_key:
+        media.image = await storage.get(msg.object_key)
+        media.image_ext = PurePosixPath(msg.object_key).suffix.lstrip(".").lower() or "jpg"
+
+    result = await run_pipeline(media, max_iterations=msg.options.max_iterations, report=report)
+
+    out = result.output
+    out_key = None
+    if out.image is not None:
+        ext = out.image_ext or "jpg"
+        out_key = result_key(job_id, ext)
+        await storage.put(out_key, out.image, CONTENT_TYPES.get(ext, "application/octet-stream"))
+
+    return ResultMessage(
+        job_id=msg.job_id,
+        status="DONE",
+        risk_detected=result.before.risky,
+        risk_before=result.before.risk,
+        risk_after=result.after.risk,
+        iterations=result.iterations,
+        result_object_key=out_key,
+        result_text=out.text,
+        findings=result.before.findings,
+        details={"worker": settings.worker_name},
+    )
+
+
+async def handle(
+    redis: Redis, storage: Storage, settings: Settings, msg_id: str, fields: dict[str, str]
+) -> None:
+    """메시지 하나를 처리한다.
+
+    실패해도 FAILED 결과를 보내고 ack 해서 같은 작업이 무한 반복되지 않게 한다.
+    """
+    try:
+        msg = JobMessage.model_validate_json(fields.get("payload", ""))
+    except ValidationError:
+        logger.error("invalid job message %s dropped", msg_id)
+        await redis.xack(settings.jobs_stream, settings.worker_group, msg_id)
+        return
+
+    logger.info("job %s received (%s)", msg.job_id, msg.input_type)
+    try:
+        result = await process(redis, storage, settings, msg)
+    except Exception as e:
+        logger.exception("job %s failed", msg.job_id)
+        result = ResultMessage(job_id=msg.job_id, status="FAILED", error=type(e).__name__)
+
+    await send_result(redis, settings.results_stream, result, settings.stream_maxlen)
+    await redis.xack(settings.jobs_stream, settings.worker_group, msg_id)
+    logger.info("job %s -> %s", msg.job_id, result.status)
+
+
+async def claim_stale(redis: Redis, storage: Storage, settings: Settings) -> None:
+    """처리 도중 워커가 죽어 ack 되지 않은 작업을 다시 가져와 처리한다."""
+    _, entries, _ = await redis.xautoclaim(
+        settings.jobs_stream,
+        settings.worker_group,
+        settings.worker_name,
+        min_idle_time=settings.claim_idle_seconds * 1000,
+        start_id="0-0",
+        count=10,
+    )
+    for msg_id, fields in entries:
+        if fields:  # 이미 잘린(삭제된) 메시지는 fields 가 비어 있다
+            logger.info("reclaimed stale job message %s", msg_id)
+            await handle(redis, storage, settings, msg_id, fields)
+
+
+async def run() -> None:
+    settings = get_settings()
+    logging.basicConfig(
+        level=settings.log_level.upper(),
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+    redis = create_redis(settings.redis_url)
+    storage = Storage(settings)
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+
+    # 일반 서버가 재시작 중이어도 죽지 않고 다시 붙을 때까지 기다린다.
+    while not stop.is_set():
+        try:
+            await redis.ping()
+            await ensure_group(redis, settings.jobs_stream, settings.worker_group)
+            break
+        except (RedisConnectionError, RedisTimeoutError) as e:
+            logger.warning("redis not reachable (%s), retry in %ss", e, RETRY_SECONDS)
+            await _sleep_or_stop(stop, RETRY_SECONDS)
+    logger.info(
+        "worker %s started: redis ok, stream=%s group=%s, s3 keys %s",
+        settings.worker_name,
+        settings.jobs_stream,
+        settings.worker_group,
+        "set" if storage.configured else "NOT set (image jobs will fail)",
+    )
+
+    next_claim = 0.0
+    while not stop.is_set():
+        try:
+            if loop.time() >= next_claim:
+                await claim_stale(redis, storage, settings)
+                next_claim = loop.time() + CLAIM_CHECK_SECONDS
+
+            resp = await redis.xreadgroup(
+                settings.worker_group,
+                settings.worker_name,
+                {settings.jobs_stream: ">"},
+                count=1,
+                block=5000,
+            )
+            for _, entries in resp or []:
+                for msg_id, fields in entries:
+                    await handle(redis, storage, settings, msg_id, fields)
+        except (RedisConnectionError, RedisTimeoutError) as e:
+            # 처리 중이던 작업은 ack 되지 않았으므로 다시 붙은 뒤 claim_stale 이 가져간다.
+            logger.warning("redis connection lost (%s), retry in %ss", e, RETRY_SECONDS)
+            await _sleep_or_stop(stop, RETRY_SECONDS)
+        except ResponseError as e:
+            if "NOGROUP" not in str(e):
+                raise
+            # Redis 데이터가 초기화되어 그룹이 사라진 경우
+            await ensure_group(redis, settings.jobs_stream, settings.worker_group)
+
+    logger.info("worker %s stopped", settings.worker_name)
+    await redis.aclose()
+
+
+if __name__ == "__main__":
+    asyncio.run(run())
