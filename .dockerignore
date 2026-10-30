@@ -1,0 +1,7 @@
+*
+!pyproject.toml
+!uv.lock
+!.python-version
+!worker/
+!stages/
+**/__pycache__
