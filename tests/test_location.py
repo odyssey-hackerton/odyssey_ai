@@ -5,7 +5,16 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from stages.location import clues, geoclip_attack, geotrace_attack, grounding, kakao, prompts, web
+from stages.location import (
+    clues,
+    direct_attack,
+    geoclip_attack,
+    geotrace_attack,
+    grounding,
+    kakao,
+    prompts,
+    web,
+)
 from stages.location.schema import Guess, Level, Place, PoiResult
 
 FINDINGS = [
@@ -170,7 +179,8 @@ async def test_geotrace_attack_end_to_end(fake_apis):
 def test_attacker_schemas_have_no_constraints_gemini_rejects():
     import json
 
-    for model in (geotrace_attack.Stage1, geotrace_attack.Plan, geotrace_attack.Stage2):
+    models = (geotrace_attack.Stage1, geotrace_attack.Plan, geotrace_attack.Stage2)
+    for model in (*models, direct_attack.Direct):
         text = json.dumps(model.model_json_schema())
         for key in ("maxLength", "minLength", "maxItems", "minimum", "maximum"):
             assert key not in text, (model.__name__, key)
@@ -181,3 +191,40 @@ def test_attacker_output_is_clamped_and_cut():
     assert len(clue.value) == 300 and clue.confidence == 1.0
     stage1 = geotrace_attack.Stage1(clues=[clue.model_dump()] * 50)
     assert len(stage1.clues) == 40
+
+
+DIRECT = {
+    "clues": [
+        {"type": "signage", "value": "보문베이커리", "confidence": 0.9, "entity_id": "f0"},
+        {"type": "kr_bus_route", "value": "1111 버스", "confidence": 0.7, "bbox": [1, 2, 3, 4]},
+    ],
+    "description": "서울 성북구 보문동 보문로",
+    "precision_level": "street",
+    "confidence": 0.8,
+    "latitude": 37.586,
+    "longitude": 127.019,
+    "rationale": "간판과 버스 번호",
+    "clues_used": ["f0"],
+}
+
+
+async def test_direct_attack_returns_same_guess_shape(monkeypatch):
+    calls = []
+
+    async def fake_generate(content, schema, instruction):
+        calls.append(instruction)
+        assert schema["title"] == "Direct"
+        return DIRECT
+
+    monkeypatch.setattr(geotrace_attack, "generate_json", fake_generate)
+    g = await direct_attack.attack(jpeg_with_gps(), FINDINGS, image_id="img_001")
+    assert len(calls) == 1 and "37.5" not in calls[0]
+    assert g.attacker == "llm_direct" and g.level == Level.STREET and g.confidence == 0.8
+    assert g.clues_used == ["f0"]
+    assert [c["entity_id"] for c in g.new_clues] == ["img_001:a1"]
+    assert set(g.model_dump()) == set(guess().model_dump())  # A 와 같은 형식
+    assert grounding.ground(g, POI).grounded is True
+
+
+def test_direct_prompt_formats():
+    prompts.DIRECT.format(entities_summary="-")

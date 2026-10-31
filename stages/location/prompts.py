@@ -134,3 +134,20 @@ Final answer requirements: * precision_level: the highest level honestly justifi
 the rubric. * latitude and longitude: best point estimate after the sanity check. * alternatives: if confidence <
 {{alt_threshold:.2f}}, include up to 3 next-best candidates with description, coordinates, and confidence.
 Return ONLY valid JSON matching the supplied schema."""
+
+
+# 공격자 B: 단계 없이 "여기 어디야?" 한 번. A 와 같은 정밀도 단어·단서 보고 형식을 쓴다.
+DIRECT = f"""Where was this photo taken? Be as specific as you can.
+{SAFETY}
+Known detections from an earlier step (id: description):
+{{entities_summary}}
+Return:
+* clues: the visible evidence you relied on. For each: type (one of [{CLUE_TYPES}]), value, confidence 0.0-1.0,
+  entity_id (the id from Known detections if it matches, else null), bbox (if entity_id is null and the clue is a
+  specific visible region, [ymin, xmin, ymax, xmax] normalized 0..1000, else null)
+* description: city, region, country; plus neighborhood / street / POI if known
+* precision_level: one of building/POI, street, neighborhood, city, state/district, country
+* confidence: 0.0 to 1.0
+* latitude, longitude
+* rationale: one or two sentences
+* clues_used: the entity_id or value of each clue that decided your answer"""

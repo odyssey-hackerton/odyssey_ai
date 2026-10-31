@@ -148,10 +148,10 @@ async def run_searches(plan: Plan, budget: int) -> tuple[list[PoiResult], list[s
     return [p for p in poi if p is not None], texts
 
 
-def new_clues(stage1: Stage1, image_id: str = "img") -> list[dict[str, Any]]:
+def new_clues(clues: list[Clue], image_id: str = "img") -> list[dict[str, Any]]:
     """①이 못 찾은 단서에 a1, a2… 번호를 붙인다 (I/O 명세 5-1 source=agent2)."""
     out = []
-    for c in stage1.clues:
+    for c in clues:
         if c.entity_id is None and c.confidence >= 0.5:
             out.append(
                 {
@@ -194,7 +194,7 @@ def to_guess(stage2: Stage2, stage1: Stage1, image_id: str) -> Guess:
         clues_used=f.clues_used[:20],
         reasoning=reasoning,
         alternatives=[a.model_dump() for a in f.alternatives],
-        new_clues=new_clues(stage1, image_id),
+        new_clues=new_clues(stage1.clues, image_id),
     )
 
 
