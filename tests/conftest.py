@@ -11,3 +11,11 @@ def no_local_models(monkeypatch):
     monkeypatch.setattr(detect, "read_lines", lambda image: [])  # OCR 없음
     monkeypatch.setattr(pii, "_veil", lambda: None)  # Veil NER 없음 → 정규식만
     monkeypatch.setattr(pii, "_kopii", lambda: None)  # ko-pii 없음 → 정규식만
+
+
+@pytest.fixture(autouse=True)
+def no_context_search(monkeypatch):
+    # ⓪ 맥락은 .env 에 키가 있어도 검색하지 않는다 (고정 규칙만).
+    from worker.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "context_use_search", False)

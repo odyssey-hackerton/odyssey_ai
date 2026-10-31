@@ -121,7 +121,7 @@ async def test_pipeline_loops_until_safe(monkeypatch):
 
     calls = {"analyze": 0}
 
-    async def fake_detect(media):
+    async def fake_detect(media, watchlist=None):
         return [{"type": "phone_number"}]
 
     async def fake_analyze(media, findings):
