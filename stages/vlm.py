@@ -15,9 +15,13 @@ __all__ = ["AIServiceError", "generate_json"]
 
 
 async def generate_json(
-    content: list[dict[str, Any]], schema: dict[str, Any], instruction: str
+    content: list[dict[str, Any]],
+    schema: dict[str, Any],
+    instruction: str,
+    provider: str | None = None,
 ) -> dict[str, Any]:
-    provider = get_settings().vlm_provider
+    """provider 를 주면 그 제공자를 쓴다 (② 가 ① 과 다른 VLM 을 쓸 때). 없으면 VLM_PROVIDER."""
+    provider = provider or get_settings().vlm_provider
     if provider == "gemini":
         return await gemini.generate_json(content, schema, instruction)
     if provider == "qwen":

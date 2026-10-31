@@ -35,6 +35,8 @@ class Settings(BaseSettings):
 
     # ② 위험 분석 VLM (bbox 조각 추출 + 조합). False 면 VLM 없이 ① 결과로만 점수를 매긴다.
     risk_use_vlm: bool = True
+    # ② 전용 VLM 제공자. 비우면 VLM_PROVIDER 를 따른다. 로컬 모델로 바꿀 때 qwen 으로 둔다.
+    risk_vlm_provider: Literal["gemini", "qwen"] | None = None
 
     # 일반 서버의 Redis (사설 IP). 예: redis://:비밀번호@10.1.1.27:6379/0
     redis_url: str = "redis://localhost:6379/0"
