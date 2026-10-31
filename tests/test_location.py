@@ -135,7 +135,7 @@ STAGE2 = {
         "description": "보문동, 서울, 한국",
         "precision_level": "building/POI",
         "confidence": 0.93,
-        "clues_used": ["f0"],
+        "clues_used": ["c1", "c2"],
     },
 }
 
@@ -172,6 +172,10 @@ async def test_geotrace_attack_end_to_end(fake_apis):
     assert len(fake_apis["prompts"]) == 3
     assert len(fake_apis["kakao"]) + len(fake_apis["web"]) == 4  # 검색 상한
     assert g.new_clues[0]["entity_id"] == "img_001:a1"
+    assert g.clues_used == ["f0", "img_001:a1"]  # c 번호 → entity_id
+    # [ymin,xmin,ymax,xmax] 0~1000 → 2000x1500 원본 픽셀 [x1,y1,x2,y2]
+    assert g.new_clues[0]["bbox"] == [200, 150, 600, 300]
+    assert "box_2d" not in g.new_clues[0]
     assert "37.5" not in fake_apis["prompts"][0]  # GPS 값이 프롬프트에 없다
     assert grounding.ground(g, poi).grounded is True
 
@@ -204,7 +208,7 @@ DIRECT = {
     "latitude": 37.586,
     "longitude": 127.019,
     "rationale": "간판과 버스 번호",
-    "clues_used": ["f0"],
+    "clues_used": ["f0", "1111 버스"],
 }
 
 
@@ -220,7 +224,7 @@ async def test_direct_attack_returns_same_guess_shape(monkeypatch):
     g = await direct_attack.attack(jpeg_with_gps(), FINDINGS, image_id="img_001")
     assert len(calls) == 1 and "37.5" not in calls[0]
     assert g.attacker == "llm_direct" and g.level == Level.STREET and g.confidence == 0.8
-    assert g.clues_used == ["f0"]
+    assert g.clues_used == ["f0", "img_001:a1"]  # 문장으로 와도 id 로 바꾼다
     assert [c["entity_id"] for c in g.new_clues] == ["img_001:a1"]
     assert set(g.model_dump()) == set(guess().model_dump())  # A 와 같은 형식
     assert grounding.ground(g, POI).grounded is True
@@ -228,3 +232,30 @@ async def test_direct_attack_returns_same_guess_shape(monkeypatch):
 
 def test_direct_prompt_formats():
     prompts.DIRECT.format(entities_summary="-")
+
+
+def test_label_clues_maps_used_and_keeps_low_confidence_used_clue():
+    clues_ = [
+        geotrace_attack.Clue(type="signage", value="SPAO 강남", confidence=0.9),
+        geotrace_attack.Clue(type="flora", value="은행나무", confidence=0.3),
+        geotrace_attack.Clue(type="sky_weather", value="맑음", confidence=0.2),
+        geotrace_attack.Clue(type="signage", value="x", confidence=0.9, bbox=[5, 5, 5, 5]),
+    ]
+    new, used = geotrace_attack.label_clues(
+        clues_, ["c2", "c9", "SPAO 강남", "c2"], "img", (100, 100)
+    )
+    assert used == ["img:a2", "img:a1"]  # 없는 번호는 버리고, 중복은 한 번만
+    assert [c["value"] for c in new] == ["SPAO 강남", "은행나무", "x"]  # 맑음은 안 씀 + 신뢰도 낮음
+    assert new[2]["bbox"] is None  # 넓이 0 박스
+
+
+def test_to_pixels():
+    assert geotrace_attack.to_pixels([0, 0, 1000, 1000], (640, 480)) == [0, 0, 640, 480]
+    assert geotrace_attack.to_pixels([500, 1200, 0, 0], (100, 100)) == [0, 0, 100, 50]
+    assert geotrace_attack.to_pixels(None, (1, 1)) is None
+
+
+def test_prompts_ask_korean_region_and_clue_numbers():
+    assert "Korean" in prompts.DIRECT and "c1" in prompts.DIRECT
+    assert "Korean" in prompts.STAGE2 and "c1" in prompts.STAGE2
+    assert "- c1 [signage]" in geotrace_attack.summarize_clues(geotrace_attack.Stage1(**STAGE1))

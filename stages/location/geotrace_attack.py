@@ -8,6 +8,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, BaseModel, ValidationError
@@ -122,11 +123,12 @@ async def _ask(model: type[BaseModel], content: list[dict[str, Any]], instructio
 
 
 def summarize_clues(stage1: Stage1) -> str:
+    """단서에 c1, c2… 번호를 붙여 보여준다. Stage 2 는 이 번호로 clues_used 를 보고한다."""
     return "\n" + "\n".join(
-        f"- [{c.type}] {c.value} (conf {c.confidence:.2f}"
+        f"- c{i} [{c.type}] {c.value} (conf {c.confidence:.2f}"
         + (f", {c.entity_id}" if c.entity_id else "")
         + ")"
-        for c in stage1.clues
+        for i, c in enumerate(stage1.clues, 1)
     )
 
 
@@ -148,26 +150,78 @@ async def run_searches(plan: Plan, budget: int) -> tuple[list[PoiResult], list[s
     return [p for p in poi if p is not None], texts
 
 
-def new_clues(clues: list[Clue], image_id: str = "img") -> list[dict[str, Any]]:
-    """①이 못 찾은 단서에 a1, a2… 번호를 붙인다 (I/O 명세 5-1 source=agent2)."""
-    out = []
-    for c in clues:
-        if c.entity_id is None and c.confidence >= 0.5:
-            out.append(
+def image_size(image_bytes: bytes) -> tuple[int, int]:
+    """공격자에게 보낸 사진과 같은 방향(EXIF 회전 적용)의 원본 크기."""
+    return open_image(image_bytes).size
+
+
+def to_pixels(box: list[float] | None, size: tuple[int, int]) -> list[int] | None:
+    """Gemini 박스 [ymin, xmin, ymax, xmax] (0~1000) → 원본 픽셀 [x1, y1, x2, y2]."""
+    if not box or len(box) != 4:
+        return None
+    w, h = size
+    y1, x1, y2, x2 = (min(1000.0, max(0.0, v)) for v in box)
+    x1, x2 = sorted((x1, x2))
+    y1, y2 = sorted((y1, y2))
+    if x2 - x1 < 1 or y2 - y1 < 1:
+        return None
+    return [round(x1 * w / 1000), round(y1 * h / 1000), round(x2 * w / 1000), round(y2 * h / 1000)]
+
+
+def _used_positions(used: list[str], clues: list[Clue]) -> list[int]:
+    """clues_used 를 단서 위치로 바꾼다. c3 같은 번호, entity_id, 단서 문장 순으로 맞춘다."""
+    out: list[int] = []
+    for u in used:
+        u = u.strip()
+        m = re.fullmatch(r"[cC](\d+)", u)
+        if m and 1 <= int(m.group(1)) <= len(clues):
+            i = int(m.group(1)) - 1
+        else:
+            i = next(
+                (
+                    k
+                    for k, c in enumerate(clues)
+                    if u == c.entity_id or u == c.value or (len(u) > 3 and u in c.value)
+                ),
+                None,
+            )
+        if i is not None and i not in out:
+            out.append(i)
+    return out
+
+
+def label_clues(
+    clues: list[Clue], used: list[str], image_id: str, size: tuple[int, int]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """①이 못 찾은 단서에 a1, a2… 번호를 붙이고 (I/O 명세 5-1 source=agent2),
+    clues_used 를 entity_id 목록으로 바꾼다. 공격자가 쓴 단서는 신뢰도가 낮아도 번호를 받는다."""
+    positions = _used_positions(used, clues)
+    ids: list[str | None] = []
+    new: list[dict[str, Any]] = []
+    for i, c in enumerate(clues):
+        if c.entity_id:
+            ids.append(c.entity_id)
+        elif c.confidence >= 0.5 or i in positions:
+            eid = f"{image_id}:a{len(new) + 1}"
+            ids.append(eid)
+            new.append(
                 {
-                    "entity_id": f"{image_id}:a{len(out) + 1}",
+                    "entity_id": eid,
                     "source": "agent2",
                     "type": c.type,
                     "value": c.value,
                     "confidence": c.confidence,
-                    "box_2d": c.bbox,
+                    "bbox": to_pixels(c.bbox, size),
                 }
             )
-    return out
+        else:
+            ids.append(None)
+    return new, [ids[i] for i in positions if ids[i]]
 
 
-def to_guess(stage2: Stage2, stage1: Stage1, image_id: str) -> Guess:
+def to_guess(stage2: Stage2, stage1: Stage1, image_id: str, size: tuple[int, int]) -> Guess:
     f = stage2.final_answer
+    new, used = label_clues(stage1.clues, f.clues_used, image_id, size)
     level = map_paper_level(f.precision_level)
     chain = stage2.chain_of_thought
     steps = {
@@ -191,10 +245,10 @@ def to_guess(stage2: Stage2, stage1: Stage1, image_id: str) -> Guess:
         lon=f.longitude,
         radius_km=RADIUS_KM[level],
         confidence=f.confidence,
-        clues_used=f.clues_used[:20],
+        clues_used=used[:20],
         reasoning=reasoning,
         alternatives=[a.model_dump() for a in f.alternatives],
-        new_clues=new_clues(stage1.clues, image_id),
+        new_clues=new,
     )
 
 
@@ -245,4 +299,5 @@ async def attack(
             alt_threshold=s.alt_threshold,
         ),
     )
-    return to_guess(stage2, stage1, image_id), poi
+    size = await asyncio.to_thread(image_size, image_bytes)
+    return to_guess(stage2, stage1, image_id, size), poi

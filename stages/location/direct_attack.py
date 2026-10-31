@@ -18,7 +18,8 @@ from stages.location.geotrace_attack import (
     _ask,
     _cut,
     attack_image,
-    new_clues,
+    image_size,
+    label_clues,
 )
 from stages.location.schema import RADIUS_KM, Guess, map_paper_level
 from worker.config import get_settings
@@ -37,7 +38,8 @@ class Direct(BaseModel):
     clues_used: list[str] = []
 
 
-def to_guess(answer: Direct, image_id: str) -> Guess:
+def to_guess(answer: Direct, image_id: str, size: tuple[int, int]) -> Guess:
+    new, used = label_clues(answer.clues, answer.clues_used, image_id, size)
     level = map_paper_level(answer.precision_level)
     return Guess(
         attacker=NAME,
@@ -48,9 +50,9 @@ def to_guess(answer: Direct, image_id: str) -> Guess:
         lon=answer.longitude,
         radius_km=RADIUS_KM[level],
         confidence=answer.confidence,
-        clues_used=answer.clues_used[:20],
+        clues_used=used[:20],
         reasoning=[answer.rationale[:300]] if answer.rationale else [],
-        new_clues=new_clues(answer.clues, image_id),
+        new_clues=new,
     )
 
 
@@ -63,4 +65,5 @@ async def attack(
         [image],
         prompts.DIRECT.format(entities_summary=clue_utils.summarize_entities(findings)),
     )
-    return to_guess(answer, image_id)
+    size = await asyncio.to_thread(image_size, image_bytes)
+    return to_guess(answer, image_id, size)
