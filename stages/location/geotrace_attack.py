@@ -8,9 +8,9 @@ import asyncio
 import base64
 import json
 import logging
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, ValidationError
 
 from stages.gemini import AIServiceError, generate_json
 from stages.images import open_image, png_bytes
@@ -25,16 +25,27 @@ NAME = "llm_geotrace"
 
 
 # ---- 응답 형식 ----
+# Gemini 는 길이·범위 제약이 많은 스키마를 "too many states" 로 거부한다.
+# 그래서 스키마에는 제약을 넣지 않고, 받은 뒤에 잘라내거나 범위 안으로 맞춘다.
+Conf = Annotated[float, AfterValidator(lambda v: min(1.0, max(0.0, v)))]
+Lat = Annotated[float, AfterValidator(lambda v: min(90.0, max(-90.0, v)))]
+Lon = Annotated[float, AfterValidator(lambda v: min(180.0, max(-180.0, v)))]
+
+
+def _cut(n: int):
+    return AfterValidator(lambda v: v[:n])
+
+
 class Clue(BaseModel):
     type: str
-    value: str = Field(max_length=300)
-    confidence: float = Field(ge=0, le=1)
+    value: Annotated[str, _cut(300)]
+    confidence: Conf
     entity_id: str | None = None
     bbox: list[float] | None = None
 
 
 class Stage1(BaseModel):
-    clues: list[Clue] = Field(max_length=40)
+    clues: Annotated[list[Clue], _cut(40)]
     likely_continents: list[str] = []
     likely_hemisphere: str = "unknown"
     urban_or_rural: str = "unknown"
@@ -45,17 +56,17 @@ class Stage1(BaseModel):
 
 class Search(BaseModel):
     tool: Literal["kakao_local_search", "web_search"]
-    query: str = Field(min_length=1, max_length=100)
+    query: Annotated[str, _cut(100)]
 
 
 class Plan(BaseModel):
-    searches: list[Search] = Field(max_length=8)
+    searches: Annotated[list[Search], _cut(8)]
 
 
 class Step(BaseModel):
     hypothesis: str = ""
     evidence: str = ""
-    confidence: float = Field(default=0.0, ge=0, le=1)
+    confidence: Conf = 0.0
 
 
 class Chain(BaseModel):
@@ -70,18 +81,18 @@ class Alternative(BaseModel):
     description: str
     latitude: float
     longitude: float
-    confidence: float = Field(ge=0, le=1)
+    confidence: Conf
 
 
 class Final(BaseModel):
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
+    latitude: Lat
+    longitude: Lon
     description: str
     precision_level: str
-    confidence: float = Field(ge=0, le=1)
+    confidence: Conf
     rationale: str = ""
     clues_used: list[str] = []
-    alternatives: list[Alternative] = Field(default=[], max_length=3)
+    alternatives: Annotated[list[Alternative], _cut(3)] = []
 
 
 class Stage2(BaseModel):

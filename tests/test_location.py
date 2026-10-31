@@ -165,3 +165,19 @@ async def test_geotrace_attack_end_to_end(fake_apis):
     assert g.new_clues[0]["entity_id"] == "img_001:a1"
     assert "37.5" not in fake_apis["prompts"][0]  # GPS 값이 프롬프트에 없다
     assert grounding.ground(g, poi).grounded is True
+
+
+def test_attacker_schemas_have_no_constraints_gemini_rejects():
+    import json
+
+    for model in (geotrace_attack.Stage1, geotrace_attack.Plan, geotrace_attack.Stage2):
+        text = json.dumps(model.model_json_schema())
+        for key in ("maxLength", "minLength", "maxItems", "minimum", "maximum"):
+            assert key not in text, (model.__name__, key)
+
+
+def test_attacker_output_is_clamped_and_cut():
+    clue = geotrace_attack.Clue(type="signage", value="x" * 500, confidence=1.7)
+    assert len(clue.value) == 300 and clue.confidence == 1.0
+    stage1 = geotrace_attack.Stage1(clues=[clue.model_dump()] * 50)
+    assert len(stage1.clues) == 40
