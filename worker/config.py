@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     paddle_device: str = "cpu"  # "cpu" | "gpu:0"
     paddle_mkldnn: bool = False  # CPU oneDNN 가속. std::exception 이 나면 False 유지
 
+    # ⓪ 맥락: 국가+날짜의 사회 이슈 (stages/context.py). 키가 없으면 고정 규칙만 쓴다.
+    tavily_api_key: SecretStr | None = None
+    context_use_search: bool = True
+    context_country: str = "KR"
+    context_timezone: str = "Asia/Seoul"
+    context_timeout_seconds: int = Field(default=15, ge=1, le=120)
+
     # 일반 서버의 Redis (사설 IP). 예: redis://:비밀번호@10.1.1.27:6379/0
     redis_url: str = "redis://localhost:6379/0"
 
