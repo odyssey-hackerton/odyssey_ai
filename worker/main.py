@@ -2,7 +2,7 @@
 
     python -m worker.main
 
-GPU 서버는 Redis(일반 서버 사설 IP)와 S3에만 접속한다. Postgres에는 접속하지 않는다.
+워커는 Redis(일반 서버 사설 IP), S3와 Gemini HTTPS API에 접속한다. Postgres에는 접속하지 않는다.
 원본 글·사진, presigned URL은 로그에 남기지 않는다.
 """
 
@@ -75,6 +75,11 @@ async def process(
         max_iterations=msg.options.max_iterations,
         report=report,
         user_choices=msg.user_choices,
+        initial_findings=(
+            [f.model_dump(exclude_none=True) for f in msg.initial_findings]
+            if msg.initial_findings is not None
+            else None
+        ),
     )
 
     out = result.output
@@ -94,7 +99,12 @@ async def process(
         result_object_key=out_key,
         result_text=out.text,
         findings=result.after.findings,
-        details={"worker": settings.worker_name},
+        details={
+            "worker": settings.worker_name,
+            "model": settings.gemini_model,
+            "processed_findings": result.before.findings,
+            "remaining_risk": result.after.risky,
+        },
     )
 
 

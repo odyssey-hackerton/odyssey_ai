@@ -6,5 +6,7 @@ from stages.types import Assessment, Media
 
 
 async def analyze(media: Media, findings: list[dict[str, Any]]) -> Assessment:
-    # TODO(AI): 항목 조합으로 위험도 계산 (예: 주소 + 얼굴이면 높음)
-    return Assessment(risky=bool(findings), risk=0.0, findings=findings)
+    # 위험 이유와 등급은 탐지 API에서 함께 받는다. 점수 집계에 별도 유료 호출은 없다.
+    weights = {"low": 0.25, "medium": 0.6, "high": 0.9}
+    risk = max((weights.get(f.get("risk_level"), 0.6) for f in findings), default=0.0)
+    return Assessment(risky=bool(findings), risk=risk, findings=findings)

@@ -32,9 +32,16 @@ class PipelineResult:
 def _apply_user_choices(assessment: Assessment, choices: list[UserChoice]) -> Assessment:
     """사용자 선택으로 findings의 action 필드를 덮어쓴다."""
     findings: list[dict[str, Any]] = list(assessment.findings)
+    seen = set()
     for choice in choices:
-        if 0 <= choice.idx < len(findings):
-            findings[choice.idx] = {**findings[choice.idx], "action": choice.action}
+        if (
+            choice.idx in seen
+            or not 0 <= choice.idx < len(findings)
+            or choice.action not in {"blur", "mask", "remove", "skip"}
+        ):
+            raise ValueError("invalid user choice")
+        seen.add(choice.idx)
+        findings[choice.idx] = {**findings[choice.idx], "action": choice.action}
     return Assessment(risky=assessment.risky, risk=assessment.risk, findings=findings)
 
 
@@ -55,10 +62,16 @@ async def run_pipeline(
     max_iterations: int,
     report: Report,
     user_choices: list[UserChoice] | None = None,
+    initial_findings: list[dict[str, Any]] | None = None,
 ) -> PipelineResult:
-    """Phase 2: 탐지·분석 후 사용자 선택을 반영해 변환·재검증을 실행한다."""
-    await report(JobStatus.DETECTING, message="개인정보 탐지 중")
-    findings = await detect(media)
+    """Phase 2: 최초 탐지 결과에 사용자 선택을 반영해 변환하고 한 번 재검증한다."""
+    if user_choices is not None:
+        if initial_findings is None:
+            raise ValueError("initial findings are required for user-selected edits")
+        findings = initial_findings
+    else:
+        await report(JobStatus.DETECTING, message="개인정보 탐지 중")
+        findings = await detect(media)
 
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
     before = await analyze(media, findings)
@@ -75,5 +88,9 @@ async def run_pipeline(
 
         await report(JobStatus.VERIFYING, iteration=iterations, message="재검증 중")
         after = await analyze(current, await detect(current))
+
+        # 사용자가 남겨둔 단서를 자동 반복으로 다시 덮어쓰지 않는다.
+        if user_choices is not None:
+            break
 
     return PipelineResult(output=current, before=before, after=after, iterations=iterations)

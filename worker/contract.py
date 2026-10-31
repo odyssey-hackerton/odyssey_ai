@@ -61,6 +61,18 @@ class UserChoice(ContractModel):
     action: str  # "blur" | "mask" | "remove" | "skip"
 
 
+class Finding(BaseModel):
+    """탐지 항목. AI 쪽이 필드를 추가해도 버리지 않고 보존한다."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str
+    source: str | None = None
+    bbox: list[float] | None = None
+    score: float | None = None
+    action: str | None = None
+
+
 class JobMessage(ContractModel):
     """jobs stream (API → 워커)"""
 
@@ -74,18 +86,8 @@ class JobMessage(ContractModel):
     # None이면 Phase 1 (탐지·분석만 → AWAITING_USER 반환)
     # 값이 있으면 Phase 2 (사용자 선택 반영 후 변환·검증 실행)
     user_choices: list[UserChoice] | None = None
-
-
-class Finding(BaseModel):
-    """탐지 항목. AI 쪽이 필드를 추가해도 버리지 않고 보존한다."""
-
-    model_config = ConfigDict(extra="allow")
-
-    type: str
-    source: str | None = None
-    bbox: list[float] | None = None
-    score: float | None = None
-    action: str | None = None
+    # Phase 1에 표시한 항목을 그대로 편집한다. 재탐지로 인덱스를 바꾸지 않는다.
+    initial_findings: list[Finding] | None = None
 
 
 class ResultMessage(ContractModel):

@@ -8,6 +8,7 @@ dependencies = [
     "pydantic-settings>=2.6",
     "redis>=5.2",
     "boto3>=1.35",
+    "pillow>=11.0",
 ]
 
 [dependency-groups]
