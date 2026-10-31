@@ -19,3 +19,11 @@ def no_context_search(monkeypatch):
     from worker.config import get_settings
 
     monkeypatch.setattr(get_settings(), "context_use_search", False)
+
+
+@pytest.fixture(autouse=True)
+def no_risk_vlm(monkeypatch):
+    # ② 판정 VLM 은 test_risk.py 에서만 스텁으로 켠다.
+    from worker.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "risk_use_vlm", False)
