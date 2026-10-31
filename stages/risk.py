@@ -25,11 +25,14 @@ from pydantic import AfterValidator, BaseModel, Field, ValidationError
 from stages import vlm
 from stages.categories import LABELS
 from stages.context import RULES, Context
+from stages.detect import detect
 from stages.images import open_image, png_bytes
 from stages.types import Assessment, Media
 from worker.config import get_settings
 
 log = logging.getLogger(__name__)
+
+Findings = list[dict[str, Any]]
 
 MAX_SCORE = 16
 HIGH_SCORE = 9  # S≥3 이고 L≥3
@@ -303,3 +306,15 @@ async def analyze(
         findings=scored,
         combos=scored_combos,
     )
+
+
+# ---------------------------------------------------------------- ② 진입점 (④ 재검증도 이것만 쓴다)
+async def find_and_judge(media: Media, context: Context | None) -> tuple[Findings, Findings]:
+    """① 탐지 → ② 판정. (findings, combos). 원본 사진이 있을 때 부른다."""
+    findings = await detect(media, watchlist=context.watchlist if context else None)
+    return await judge(media, findings, context)
+
+
+async def assess(media: Media, context: Context | None) -> Assessment:
+    """② 전체 = find_and_judge → analyze. ④ 재검증은 이 함수를 그대로 다시 부른다."""
+    return await analyze(media, *await find_and_judge(media, context), context)

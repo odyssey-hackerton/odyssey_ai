@@ -168,6 +168,8 @@ async def process(
                 "processed_findings": result.before.findings,
                 "remaining_risk": result.after.risky,
                 "combos": result.after.combos,
+                # ④ 처리 전후 객체 비교 (재검증했을 때만)
+                **({"verification": result.verification} if result.verification else {}),
             },
         )
     finally:
