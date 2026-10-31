@@ -148,3 +148,27 @@ async def test_analyze_without_judgement_uses_detect_level():
     result = await risk.analyze(Media(), [finding(0, risk_level="high")])
     assert result.risky and result.risk == 0.9 and result.combos == []
     assert (await risk.analyze(Media(), [])).risky is False
+
+
+async def test_exif_judged_by_code_and_inputs_passed(monkeypatch):
+    provider = AsyncMock(side_effect=[{"objects": [judged(0, 2, 3)]}, {"combos": []}])
+    monkeypatch.setattr(risk.vlm, "generate_json", provider)
+    exif = {"entity_id": "f1", "type": "gps", "category": "location", "source": "exif"}
+    sign = finding(0, description="건물 외벽 상호 간판", normalized="OO약국")
+    findings, _ = await risk.judge(MEDIA, [sign, exif])
+
+    assert (findings[1]["severity"], findings[1]["likelihood"]) == (3, 4)
+    assert "GPS" in findings[1]["reason"]
+    step1 = provider.call_args_list[0].args[0][-1]["text"]
+    assert "id=f1" not in step1  # EXIF 는 VLM 에 묻지 않는다
+    assert "설명: 건물 외벽 상호 간판" in step1 and "읽힌 글자: OO약국" in step1
+    step2 = provider.call_args_list[1].args[0][-1]["text"]
+    assert "S=" not in step2 and "L=" not in step2  # 조합 단계에 객체 점수를 넘기지 않는다
+
+
+async def test_only_exif_skips_vlm_step1(monkeypatch):
+    provider = AsyncMock(side_effect=AssertionError("no VLM call"))
+    monkeypatch.setattr(risk.vlm, "generate_json", provider)
+    exif = {"entity_id": "f0", "type": "metadata", "category": "location", "source": "exif"}
+    findings, combos = await risk.judge(MEDIA, [exif])
+    assert (findings[0]["severity"], findings[0]["likelihood"]) == (1, 1) and combos == []

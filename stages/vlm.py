@@ -15,11 +15,20 @@ __all__ = ["AIServiceError", "generate_json"]
 
 
 async def generate_json(
-    content: list[dict[str, Any]], schema: dict[str, Any], instruction: str
+    content: list[dict[str, Any]],
+    schema: dict[str, Any],
+    instruction: str,
+    *,
+    max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
+    """max_output_tokens 는 Gemini 에만 적용한다 (생각 토큰 포함 한도). None 이면 기본값."""
     provider = get_settings().vlm_provider
     if provider == "gemini":
-        return await gemini.generate_json(content, schema, instruction)
+        if max_output_tokens is None:
+            return await gemini.generate_json(content, schema, instruction)
+        return await gemini.generate_json(
+            content, schema, instruction, max_output_tokens=max_output_tokens
+        )
     if provider == "qwen":
         return await qwen.generate_json(content, schema, instruction)
     raise AIServiceError(f"unknown VLM_PROVIDER: {provider}")
