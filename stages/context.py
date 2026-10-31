@@ -267,14 +267,21 @@ def _rules_only(country: str, day: date) -> Context:
     )
 
 
+SUMMARY_MAX_TOKENS = 16384
+
+
 async def _summarize(country: str, day: date, found: dict[str, list[dict[str, str]]]) -> Context:
     lines = [f"국가: {COUNTRY_NAMES.get(country, country)}", f"날짜: {day.isoformat()}"]
     for kind, results in found.items():
         lines.append(f"\n[kind={kind}] 검색어: {SEARCH_TERMS[kind][0]}")
         for r in results:
             lines.append(f"- ({r['published'] or '날짜 없음'}) {r['title']}: {r['content']}")
+    # 기사 35개 + 생각(thinking) 토큰이 기본 4096 을 넘겨 응답이 잘렸다 (status=incomplete).
     raw = await vlm.generate_json(
-        [{"type": "text", "text": "\n".join(lines)}], _SCHEMA, _INSTRUCTION
+        [{"type": "text", "text": "\n".join(lines)}],
+        _SCHEMA,
+        _INSTRUCTION,
+        max_output_tokens=SUMMARY_MAX_TOKENS,
     )
     summary = _Summary.model_validate(raw)
     # 시작일은 입력한 기사 날짜 중 하나여야 한다 (지어낸 날짜·날짜 없는 일반 경향은 버린다).
@@ -308,7 +315,9 @@ async def _build(country: str, day: date) -> Context:
         return await _summarize(country, day, found)
     except (vlm.AIServiceError, ValidationError) as error:
         # 원문·응답은 남기지 않는다.
-        log.warning("context summary failed (%s); using fixed rules only", type(error).__name__)
+        # AIServiceError 메시지는 HTTP 코드·status 만 담는다 (기사·응답 원문 없음).
+        reason = str(error)[:120] if isinstance(error, vlm.AIServiceError) else "schema"
+        log.warning("context summary failed (%s); using fixed rules only", reason)
         return _rules_only(country, day)
 
 
