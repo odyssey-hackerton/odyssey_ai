@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -11,6 +12,53 @@ from worker.config import get_settings
 
 class AIServiceError(RuntimeError):
     """호출 실패는 안전한 빈 결과로 취급하지 않는다."""
+
+
+# Gemini 는 길이·범위 제약이 많은 스키마를 "too many states"(HTTP 400)로 거부한다.
+# 보낼 때는 제약을 빼고, 받은 응답은 호출한 쪽의 pydantic 모델로 다시 검사한다.
+_LIMIT_KEYS = frozenset(
+    {
+        "minLength",
+        "maxLength",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minItems",
+        "maxItems",
+        "pattern",
+    }
+)
+
+# 503(모델 과부하)은 잠깐 뒤 다시 보낸다. 429(한도 초과)는 다시 보내지 않는다.
+RETRY_DELAYS = (2, 5)
+
+
+def serving_schema(schema: Any) -> Any:
+    """Gemini 에 보낼 응답 스키마. 길이·범위 제약만 뺀다 (속성 이름은 건드리지 않는다)."""
+    if isinstance(schema, list):
+        return [serving_schema(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {}
+    for key, value in schema.items():
+        if key in ("properties", "$defs"):
+            out[key] = {name: serving_schema(sub) for name, sub in value.items()}
+        elif key not in _LIMIT_KEYS:
+            out[key] = serving_schema(value)
+    return out
+
+
+def _send(request: Request, timeout: int) -> bytes:
+    for delay in (*RETRY_DELAYS, None):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return response.read(1024 * 1024 + 1)
+        except HTTPError as error:
+            if error.code != 503 or delay is None:
+                raise
+        time.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 def _request(payload: dict[str, Any]) -> dict[str, Any]:
@@ -27,8 +75,7 @@ def _request(payload: dict[str, Any]) -> dict[str, Any]:
         method="POST",
     )
     try:
-        with urlopen(request, timeout=settings.gemini_timeout_seconds) as response:
-            body = response.read(1024 * 1024 + 1)
+        body = _send(request, settings.gemini_timeout_seconds)
         if len(body) > 1024 * 1024:
             raise AIServiceError("Gemini response exceeded the size limit")
         result = json.loads(body)
@@ -61,7 +108,11 @@ async def generate_json(
             "model": get_settings().gemini_model,
             "input": content,
             "system_instruction": instruction,
-            "response_format": {"type": "text", "mime_type": "application/json", "schema": schema},
+            "response_format": {
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": serving_schema(schema),
+            },
             "generation_config": generation_config,
             "store": False,
         },

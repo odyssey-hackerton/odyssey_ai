@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from stages import gemini
-from stages.detect import detect
+from stages.detect import Detection, detect
 from stages.images import open_image, png_bytes
 from stages.transform import transform
 from stages.types import Assessment, Media
@@ -212,3 +212,71 @@ async def test_transparent_rgb_never_becomes_visible(format):
         ),
     )
     assert open_image(result.image).getpixel((5, 5)) == (255, 255, 255)
+
+
+def test_detection_schema_sent_without_limits_gemini_rejects():
+    sent = json.dumps(gemini.serving_schema(Detection.model_json_schema()))
+    for key in ("maxLength", "minLength", "maxItems", "minimum", "maximum"):
+        assert key not in sent, key
+    assert '"findings"' in sent and '"box_2d"' in sent
+
+
+def test_serving_schema_keeps_property_names():
+    schema = {"properties": {"maximum": {"type": "number", "maximum": 3}}, "maxItems": 2}
+    assert gemini.serving_schema(schema) == {"properties": {"maximum": {"type": "number"}}}
+
+
+async def test_long_findings_are_cut_and_boxes_clamped(monkeypatch):
+    long = candidate(
+        source="image",
+        text=None,
+        title="가" * 200,
+        description="나" * 900,
+        box_2d=[-5, 0, 1004, 500],
+        score=1.2,
+    )
+    monkeypatch.setattr(
+        "stages.detect.generate_json", AsyncMock(return_value={"findings": [long] * 40})
+    )
+    findings = await detect(Media(image=png_bytes(Image.new("RGB", (100, 100)))))
+    assert len(findings) == 30
+    assert len(findings[0]["title"]) == 80 and len(findings[0]["description"]) == 300
+    assert findings[0]["bbox"] == [0, 0, 50, 100] and findings[0]["score"] == 1.0
+
+
+def test_overloaded_model_is_retried_but_not_forever(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "private-test-key")
+    gemini.get_settings.cache_clear()
+    monkeypatch.setattr(gemini.time, "sleep", lambda s: None)
+    calls = []
+
+    class Ok:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, n):
+            return b'{"status": "completed"}'
+
+    def flaky(request, **kwargs):
+        calls.append(request)
+        if len(calls) < 3:
+            raise HTTPError(request.full_url, 503, "busy", {}, None)
+        return Ok()
+
+    def busy(request, **kwargs):
+        calls.append(request)
+        raise HTTPError(request.full_url, 503, "busy", {}, None)
+
+    try:
+        monkeypatch.setattr(gemini, "urlopen", flaky)
+        assert gemini._request({}) == {"status": "completed"} and len(calls) == 3
+        calls.clear()
+        monkeypatch.setattr(gemini, "urlopen", busy)
+        with pytest.raises(gemini.AIServiceError, match="HTTP 503"):
+            gemini._request({})
+        assert len(calls) == 1 + len(gemini.RETRY_DELAYS)
+    finally:
+        gemini.get_settings.cache_clear()

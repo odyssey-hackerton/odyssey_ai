@@ -19,6 +19,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import ResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from stages.gemini import AIServiceError
 from stages.types import Media
 from worker.config import Settings, get_settings
 from worker.contract import JobMessage, JobStatus, ResultMessage
@@ -209,7 +210,9 @@ async def handle(
             except (OriginalCleanupError, RedisConnectionError, RedisTimeoutError):
                 raise
             except Exception as error:
-                logger.warning("job %s failed (%s)", msg.job_id, type(error).__name__)
+                # AIServiceError 메시지에는 키·원문이 없다. 다른 예외는 이름만 남긴다.
+                reason = f": {error}" if isinstance(error, AIServiceError) else ""
+                logger.warning("job %s failed (%s%s)", msg.job_id, type(error).__name__, reason)
                 result = ResultMessage(
                     job_id=msg.job_id,
                     execution_id=msg.execution_id,
