@@ -95,6 +95,15 @@ photos (relationships), luxury goods, home interior, routine places (lifestyle),
 schedules (time_movement). Use type=other for these, and type=context_item for anything that
 matches the context watchlist (copy the watchlist item into watch_item).
 Give every finding the single best category; for catalog types it is fixed by code.
+Scan the whole image systematically: foreground, middle and background, left to right, including
+small, distant or partly blurred areas. Report each distinct sign, building or object separately
+with its own box; never merge several signs into one finding.
+Location clues count even without readable text. Use type=bus_stop for bus shelters, bus-stop
+platforms, median bus lanes and route numbers; use type=other with category=location for
+landmark buildings or towers, large digital billboards, distinctive facades or shop clusters,
+subway entrances, apartment brand logos, address plates and distinctive road infrastructure.
+Use type=other with category=time_movement for clocks or displays showing a time or date,
+tickets, timetables and schedules.
 Describe findings in Korean without repeating private values in title/description.
 Explain the concrete exposure. Distinguish confidence (score) from risk_level.
 Return an empty findings array only after inspecting all provided content.
