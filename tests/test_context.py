@@ -41,7 +41,7 @@ def _news(calls):
 
 
 def _summary(calls):
-    async def generate_json(content, schema, instruction):
+    async def generate_json(content, schema, instruction, **_):
         calls.append(content[0]["text"])
         return {
             "watchlist": [
@@ -131,7 +131,7 @@ async def test_search_failure_falls_back(monkeypatch):
 async def test_bad_summary_falls_back(monkeypatch):
     monkeypatch.setattr(context, "post_json", _news([]))
 
-    async def bad(content, schema, instruction):
+    async def bad(content, schema, instruction, **_):
         return {"watchlist": [{"item": "x", "category": "nope", "why": "y"}], "issues": []}
 
     monkeypatch.setattr(context.vlm, "generate_json", bad)
@@ -149,7 +149,7 @@ def test_issue_weight_decay(monkeypatch):
 async def test_drops_undated_and_invented_issues(monkeypatch):
     monkeypatch.setattr(context, "post_json", _news([]))
 
-    async def summary(content, schema, instruction):
+    async def summary(content, schema, instruction, **_):
         def issue(title, started):
             return {"title": title, "kind": "election", "category": "sensitive", "started": started}
 
