@@ -21,7 +21,7 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from stages.types import Media
 from worker.config import Settings, get_settings
 from worker.contract import JobMessage, JobStatus, ResultMessage
-from worker.pipeline import run_pipeline
+from worker.pipeline import run_detection_phase, run_pipeline
 from worker.queue import create_redis, ensure_group, send_result, set_progress
 from worker.storage import Storage, result_key
 
@@ -57,7 +57,25 @@ async def process(
         media.image = await storage.get(msg.object_key)
         media.image_ext = PurePosixPath(msg.object_key).suffix.lstrip(".").lower() or "jpg"
 
-    result = await run_pipeline(media, max_iterations=msg.options.max_iterations, report=report)
+    if msg.user_choices is None:
+        # Phase 1: 탐지·분석만 실행 → 사용자 선택 대기
+        detection = await run_detection_phase(media, report=report)
+        return ResultMessage(
+            job_id=msg.job_id,
+            status="AWAITING_USER",
+            risk_detected=detection.before.risky,
+            risk_before=detection.before.risk,
+            findings=detection.before.findings,
+            details={"worker": settings.worker_name},
+        )
+
+    # Phase 2: 사용자 선택 반영 후 변환·검증 실행
+    result = await run_pipeline(
+        media,
+        max_iterations=msg.options.max_iterations,
+        report=report,
+        user_choices=msg.user_choices,
+    )
 
     out = result.output
     out_key = None
@@ -75,7 +93,7 @@ async def process(
         iterations=result.iterations,
         result_object_key=out_key,
         result_text=out.text,
-        findings=result.before.findings,
+        findings=result.after.findings,
         details={"worker": settings.worker_name},
     )
 

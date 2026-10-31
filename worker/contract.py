@@ -32,6 +32,7 @@ class JobStatus(StrEnum):
     QUEUED = "QUEUED"
     DETECTING = "DETECTING"
     ANALYZING = "ANALYZING"
+    AWAITING_USER = "AWAITING_USER"  # 탐지·분석 완료, 사용자 선택 대기
     TRANSFORMING = "TRANSFORMING"
     VERIFYING = "VERIFYING"
     DONE = "DONE"
@@ -39,6 +40,7 @@ class JobStatus(StrEnum):
 
 
 FINAL_STATUSES = {JobStatus.DONE, JobStatus.FAILED}
+TERMINAL_STATUSES = FINAL_STATUSES | {JobStatus.AWAITING_USER}
 
 
 class ContractModel(BaseModel):
@@ -52,6 +54,13 @@ class JobOptions(ContractModel):
 InputType = Literal["image", "text", "image_text"]
 
 
+class UserChoice(ContractModel):
+    """사용자가 선택한 탐지 항목별 처리 방법."""
+
+    idx: int  # findings 리스트 인덱스
+    action: str  # "blur" | "mask" | "remove" | "skip"
+
+
 class JobMessage(ContractModel):
     """jobs stream (API → 워커)"""
 
@@ -62,6 +71,9 @@ class JobMessage(ContractModel):
     text: str | None = None  # 원본 글 (text, image_text). Postgres에는 저장하지 않는다.
     options: JobOptions = Field(default_factory=JobOptions)
     created_at: datetime
+    # None이면 Phase 1 (탐지·분석만 → AWAITING_USER 반환)
+    # 값이 있으면 Phase 2 (사용자 선택 반영 후 변환·검증 실행)
+    user_choices: list[UserChoice] | None = None
 
 
 class Finding(BaseModel):
@@ -81,7 +93,7 @@ class ResultMessage(ContractModel):
 
     schema_version: int = SCHEMA_VERSION
     job_id: UUID
-    status: Literal["DONE", "FAILED"]
+    status: Literal["DONE", "FAILED", "AWAITING_USER"]
     risk_detected: bool | None = None
     risk_before: float | None = None
     risk_after: float | None = None

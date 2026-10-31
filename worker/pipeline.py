@@ -5,14 +5,20 @@
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 from stages.detect import detect
 from stages.risk import analyze
 from stages.transform import transform
 from stages.types import Assessment, Media
-from worker.contract import JobStatus
+from worker.contract import JobStatus, UserChoice
 
 Report = Callable[..., Awaitable[None]]  # report(status, iteration=0, message=None)
+
+
+@dataclass
+class DetectionResult:
+    before: Assessment  # 탐지·분석 결과 (변환 전)
 
 
 @dataclass
@@ -23,12 +29,43 @@ class PipelineResult:
     iterations: int
 
 
-async def run_pipeline(media: Media, *, max_iterations: int, report: Report) -> PipelineResult:
+def _apply_user_choices(assessment: Assessment, choices: list[UserChoice]) -> Assessment:
+    """사용자 선택으로 findings의 action 필드를 덮어쓴다."""
+    findings: list[dict[str, Any]] = list(assessment.findings)
+    for choice in choices:
+        if 0 <= choice.idx < len(findings):
+            findings[choice.idx] = {**findings[choice.idx], "action": choice.action}
+    return Assessment(risky=assessment.risky, risk=assessment.risk, findings=findings)
+
+
+async def run_detection_phase(media: Media, *, report: Report) -> DetectionResult:
+    """Phase 1: 탐지·분석만 실행하고 결과를 반환한다. 변환은 하지 않는다."""
     await report(JobStatus.DETECTING, message="개인정보 탐지 중")
     findings = await detect(media)
 
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
     before = await analyze(media, findings)
+
+    return DetectionResult(before=before)
+
+
+async def run_pipeline(
+    media: Media,
+    *,
+    max_iterations: int,
+    report: Report,
+    user_choices: list[UserChoice] | None = None,
+) -> PipelineResult:
+    """Phase 2: 탐지·분석 후 사용자 선택을 반영해 변환·재검증을 실행한다."""
+    await report(JobStatus.DETECTING, message="개인정보 탐지 중")
+    findings = await detect(media)
+
+    await report(JobStatus.ANALYZING, message="위험도 분석 중")
+    before = await analyze(media, findings)
+
+    # 사용자가 선택한 action으로 findings 덮어쓰기
+    if user_choices:
+        before = _apply_user_choices(before, user_choices)
 
     current, after, iterations = media, before, 0
     while after.risky and iterations < max_iterations:
