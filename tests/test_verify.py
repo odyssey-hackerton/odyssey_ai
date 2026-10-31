@@ -1,48 +1,80 @@
-"""④ 재검증: ② 코드 재사용과 처리 전후 객체 비교."""
+"""④ 재검증: ② 코드 재사용, 처리 이력 전달, 처리 전후 객체 상태."""
+
+from unittest.mock import AsyncMock
 
 from stages import risk, verify
 from stages.types import Assessment, Media
 
 
-def obj(i, type_="store_name", bbox=(10, 10, 50, 50), action="mask"):
-    return {"entity_id": f"f{i}", "type": type_, "bbox": list(bbox), "action": action}
+def obj(i, type_="store_name", bbox=(10, 10, 50, 50), action="mask", **extra):
+    return {"entity_id": f"f{i}", "type": type_, "bbox": list(bbox), "action": action, **extra}
 
 
-def test_compare_counts_remaining_removed_new_and_skipped():
+def test_compare_statuses():
     before = [
-        obj(0),  # 처리했는데 같은 자리에 다시 탐지 → remaining
+        obj(0, "face", action="blur", title="얼굴"),  # 다시 나오고 medium → remaining
         obj(1, bbox=(100, 100, 150, 150)),  # 사라짐 → removed
-        obj(2, "face", (200, 200, 260, 260), action="skip"),  # 사용자가 남겨둠
-        {"entity_id": "f3", "type": "metadata", "source": "exif", "action": "remove"},
+        obj(2, "face", (200, 200, 260, 260), action="skip"),  # 사용자가 둠 → kept
+        obj(3, "bus_stop", (300, 10, 340, 50)),  # 다시 나왔지만 low → weakened
+        {"entity_id": "f4", "type": "metadata", "source": "exif", "action": "remove"},
     ]
     after = [
-        obj(9, bbox=(12, 12, 52, 52)),  # f0 과 겹침 (IoU ≥ 0.5)
-        obj(8, "face", (201, 201, 261, 261)),  # skip 한 얼굴
-        obj(7, bbox=(300, 300, 340, 340)),  # 새로 생김 (재생성된 가짜 간판 등)
+        obj(9, "face", (12, 12, 52, 52), risk_level="medium", reason="윤곽이 보임"),
+        obj(8, "face", (201, 201, 261, 261), risk_level="high"),
+        obj(7, "bus_stop", (301, 11, 341, 51), risk_level="low"),
+        obj(6, "other", (400, 400, 440, 440), risk_level="medium", reason="야간 외식"),
+        obj(5, "other", (500, 500, 540, 540), risk_level="low"),  # 새로 찾았지만 low → 빼기
     ]
     result = verify.compare(before, after)
-    assert result["remaining"] == ["f0"]
-    assert result["removed"] == 2  # f1, f3(EXIF)
-    assert result["kept_by_user"] == ["f2"]
-    assert result["new"] == 1
-    assert (result["before"], result["after"], result["reduced"]) == (4, 3, True)
+    status = {i["entity_id"]: i["status"] for i in result["items"]}
+    assert status == {
+        "f0": "remaining",
+        "f1": "removed",
+        "f2": "kept",
+        "f3": "weakened",
+        "f4": "removed",
+    }
+    f0 = result["items"][0]
+    assert f0["recommend"] == "mask" and f0["after"]["reason"] == "윤곽이 보임"
+    assert [n["entity_id"] for n in result["new_items"]] == ["f6"]
+    assert (result["remaining"], result["new"], result["clean"]) == (1, 1, False)
 
 
 def test_compare_needs_same_type_and_overlap():
     before = [obj(0)]
-    assert verify.compare(before, [obj(1, "bus_stop")])["remaining"] == []
-    assert verify.compare(before, [obj(1, bbox=(40, 40, 90, 90))])["remaining"] == []
+    assert verify.compare(before, [obj(1, "bus_stop")])["items"][0]["status"] == "removed"
+    assert (
+        verify.compare(before, [obj(1, bbox=(40, 40, 90, 90))])["items"][0]["status"] == "removed"
+    )
 
 
-async def test_verify_reuses_risk_assess(monkeypatch):
+async def test_verify_reuses_risk_assess_with_history(monkeypatch):
     calls = []
 
-    async def fake_assess(media, context):
-        calls.append(media)
+    async def fake_assess(media, context, processed=None):
+        calls.append(processed)
         return Assessment(risky=False, risk=0.1, findings=[])
 
     monkeypatch.setattr(risk, "assess", fake_assess)
-    media = Media(text="x")
-    after, result = await verify.verify(media, None, Assessment(True, 0.9, [obj(0)]))
-    assert calls == [media] and after.risk == 0.1
-    assert result["removed"] == 1 and result["remaining"] == []
+    before = Assessment(True, 0.9, [obj(0)])
+    after, result = await verify.verify(Media(text="x"), None, before)
+    assert calls == [before.findings] and after.risk == 0.1
+    assert result["clean"] and result["removed"] == 1
+
+
+async def test_edited_area_is_told_to_judge(monkeypatch):
+    monkeypatch.setattr(risk, "detect", AsyncMock(return_value=[obj(0, "face", (12, 12, 52, 52))]))
+    provider = AsyncMock(
+        return_value={
+            "objects": [
+                {"entity_id": "f0", "reason": "윤곽", "severity": 2, "likelihood": 2, "issue": ""}
+            ]
+        }
+    )
+    monkeypatch.setattr(risk.vlm, "generate_json", provider)
+    monkeypatch.setattr(risk.get_settings(), "risk_use_vlm", True)
+    findings, _ = await risk.find_and_judge(
+        Media(text="x"), None, processed=[obj(0, "face", action="blur")]
+    )
+    assert findings[0]["edited_as"] == "blur"
+    assert "이미 블러 처리됐다" in provider.call_args_list[0].args[0][-1]["text"]
