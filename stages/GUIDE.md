@@ -13,10 +13,8 @@
 # stages/detect.py
 async def detect(media: Media) -> list[dict[str, Any]]: ...
 
-
 # stages/risk.py
 async def analyze(media: Media, findings: list[dict[str, Any]]) -> Assessment: ...
-
 
 # stages/transform.py
 async def transform(media: Media, assessment: Assessment) -> Media: ...
@@ -27,16 +25,15 @@ async def transform(media: Media, assessment: Assessment) -> Media: ...
 ```python
 @dataclass
 class Media:
-    image: bytes | None  # 원본 이미지 바이트 (jpg/png/webp)
+    image: bytes | None    # 원본 이미지 바이트 (jpg/png/webp)
     image_ext: str | None  # "jpg", "png", "webp"
-    text: str | None  # 입력 텍스트
-
+    text: str | None       # 입력 텍스트
 
 @dataclass
 class Assessment:
-    risky: bool  # 위험 요소 남아있으면 True
-    risk: float  # 0.0 ~ 1.0
-    findings: list[dict]  # detect()가 반환한 findings 그대로 넘어옴
+    risky: bool            # 위험 요소 남아있으면 True
+    risk: float            # 0.0 ~ 1.0
+    findings: list[dict]   # detect()가 반환한 findings 그대로 넘어옴
 ```
 
 ---
@@ -51,10 +48,10 @@ class Assessment:
 
 ```python
 {
-    "type": str,  # 필수. "face" | "license_plate" | "address" | "phone" | "email" | "id_number" | "gps" 등
-    "source": str,  # 필수. "yolo" | "ocr" | "exif" | "regex" | "vlm" 등
-    "bbox": [x1, y1, x2, y2],  # 이미지 탐지 시 필수. 픽셀 좌표 (왼쪽 위, 오른쪽 아래)
-    "score": float,  # 신뢰도 0.0~1.0
+    "type": str,                   # 필수. "face" | "license_plate" | "address" | "phone" | "email" | "id_number" | "gps" 등
+    "source": str,                 # 필수. "yolo" | "ocr" | "exif" | "regex" | "vlm" 등
+    "bbox": [x1, y1, x2, y2],     # 이미지 탐지 시 필수. 픽셀 좌표 (왼쪽 위, 오른쪽 아래)
+    "score": float,                # 신뢰도 0.0~1.0
     # 추가 필드 자유롭게 붙여도 됨
 }
 ```
@@ -82,9 +79,9 @@ class Assessment:
 
 ```python
 Assessment(
-    risky=True,  # 아직 처리가 필요하면 True → 루프가 transform 한 번 더 돔
-    risk=0.85,  # 전체 위험도 점수 (0.0~1.0)
-    findings=findings,  # 받은 findings 그대로 또는 보강해서 반환
+    risky=True,          # 아직 처리가 필요하면 True → 루프가 transform 한 번 더 돔
+    risk=0.85,           # 전체 위험도 점수 (0.0~1.0)
+    findings=findings    # 받은 findings 그대로 또는 보강해서 반환
 )
 ```
 
@@ -124,7 +121,7 @@ while assessment.risky and iterations < max_iterations:
 return Media(
     image=processed_image_bytes,  # 블러/마스킹 적용된 이미지
     image_ext=media.image_ext,
-    text=masked_text,  # 텍스트 마스킹 결과
+    text=masked_text,             # 텍스트 마스킹 결과
 )
 ```
 
@@ -139,7 +136,7 @@ return Media(
 **각 finding에 `"action"` 필드 추가 필수** (결과 리포트에 표시됩니다):
 
 ```python
-finding["action"] = "blur"  # 또는 "mask" | "remove" | "skip"
+finding["action"] = "blur"    # 또는 "mask" | "remove" | "skip"
 ```
 
 ---
