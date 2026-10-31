@@ -124,7 +124,7 @@ async def test_pipeline_loops_until_safe(monkeypatch):
     async def fake_detect(media, watchlist=None):
         return [{"type": "phone_number"}]
 
-    async def fake_analyze(media, findings):
+    async def fake_analyze(media, findings, *_):
         calls["analyze"] += 1
         risky = calls["analyze"] < 3  # 처음 분석 + 1회차 재검증은 위험, 2회차에 안전
         return Assessment(risky=risky, risk=0.8 if risky else 0.1, findings=findings)
@@ -151,7 +151,7 @@ async def test_pipeline_loops_until_safe(monkeypatch):
 async def test_pipeline_stops_at_max_iterations(monkeypatch):
     import worker.pipeline as p
 
-    async def always_risky(media, findings):
+    async def always_risky(media, findings, *_):
         return Assessment(risky=True, risk=0.9)
 
     from unittest.mock import AsyncMock

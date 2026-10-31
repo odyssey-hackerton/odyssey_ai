@@ -7,9 +7,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from stages.context import build_context
+from stages.context import Context, build_context
 from stages.detect import detect
-from stages.risk import analyze
+from stages.risk import analyze, judge
 from stages.transform import transform
 from stages.types import Assessment, Media
 from worker.contract import JobStatus, UserChoice
@@ -30,10 +30,13 @@ class PipelineResult:
     iterations: int
 
 
-async def _detect(media: Media) -> list[dict[str, Any]]:
-    """⓪ 맥락(하루 캐시) → ① 탐지. 맥락은 실패하지 않는다 (최악이면 고정 규칙만)."""
-    context = await build_context()
-    return await detect(media, watchlist=context.watchlist)
+Findings = list[dict[str, Any]]
+
+
+async def _detect(media: Media, context: Context) -> tuple[Findings, Findings]:
+    """① 탐지 → ② 판정(원본이 있을 때 VLM). (findings, combos) 를 돌려준다."""
+    findings = await detect(media, watchlist=context.watchlist)
+    return await judge(media, findings, context)
 
 
 def _apply_user_choices(assessment: Assessment, choices: list[UserChoice]) -> Assessment:
@@ -49,7 +52,9 @@ def _apply_user_choices(assessment: Assessment, choices: list[UserChoice]) -> As
             raise ValueError("invalid user choice")
         seen.add(choice.idx)
         findings[choice.idx] = {**findings[choice.idx], "action": choice.action}
-    return Assessment(risky=assessment.risky, risk=assessment.risk, findings=findings)
+    return Assessment(
+        risky=assessment.risky, risk=assessment.risk, findings=findings, combos=assessment.combos
+    )
 
 
 async def run_detection_phase(
@@ -57,17 +62,23 @@ async def run_detection_phase(
     *,
     report: Report,
     initial_findings: list[dict[str, Any]] | None = None,
-    on_detected: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
+    initial_combos: list[dict[str, Any]] | None = None,
+    on_detected: Callable[[Findings, Findings], Awaitable[None]] | None = None,
 ) -> DetectionResult:
     """Phase 1: 탐지·분석만 실행하고 결과를 반환한다. 변환은 하지 않는다."""
     await report(JobStatus.DETECTING, message="개인정보 탐지 중")
-    findings = initial_findings if initial_findings is not None else await _detect(media)
+    context = await build_context()  # ⓪ 하루 캐시. 실패하지 않는다 (최악이면 고정 규칙만)
+    if initial_findings is not None:
+        findings, combos = initial_findings, initial_combos or []
+    else:
+        # ② 판정은 원본 사진이 필요하므로 원본을 지우기 전에 끝낸다.
+        findings, combos = await _detect(media, context)
     if on_detected is not None:
-        await on_detected(findings)
+        await on_detected(findings, combos)
         media.image = None
 
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
-    before = await analyze(media, findings)
+    before = await analyze(media, findings, combos, context)
 
     return DetectionResult(before=before)
 
@@ -83,16 +94,18 @@ async def run_pipeline(
     on_transformed: Callable[[Media], Awaitable[None]] | None = None,
 ) -> PipelineResult:
     """Phase 2: 최초 탐지 결과에 사용자 선택을 반영해 변환하고 한 번 재검증한다."""
+    context = await build_context()
+    combos: Findings = []  # 1단계 조합 경고는 백엔드가 details 로 이미 받았다
     if user_choices is not None:
         if initial_findings is None:
             raise ValueError("initial findings are required for user-selected edits")
         findings = initial_findings
     else:
         await report(JobStatus.DETECTING, message="개인정보 탐지 중")
-        findings = await _detect(media)
+        findings, combos = await _detect(media, context)
 
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
-    before = await analyze(media, findings)
+    before = await analyze(media, findings, combos, context)
 
     # 사용자가 선택한 action으로 findings 덮어쓰기
     if user_choices:
@@ -111,7 +124,7 @@ async def run_pipeline(
             media.image = None
 
         await report(JobStatus.VERIFYING, iteration=iterations, message="재검증 중")
-        after = await analyze(current, await _detect(current))
+        after = await analyze(current, *await _detect(current, context), context)
 
         # 사용자가 남겨둔 단서를 자동 반복으로 다시 덮어쓰지 않는다.
         if user_choices is not None:

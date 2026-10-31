@@ -84,12 +84,12 @@ async def process(
 
         if msg.user_choices is None:
 
-            async def detected(findings):
-                # 원본 삭제 전에 복구에 필요한 탐지 결과만 저장한다.
+            async def detected(findings, combos):
+                # 원본 삭제 전에 복구에 필요한 탐지·판정 결과만 저장한다.
                 await redis.setex(
                     checkpoint_key,
                     settings.progress_ttl_seconds,
-                    json.dumps({"stage": "detected", "findings": findings}),
+                    json.dumps({"stage": "detected", "findings": findings, "combos": combos}),
                 )
                 await discard_original(storage, msg.object_key)
 
@@ -98,6 +98,7 @@ async def process(
                 report=report,
                 on_detected=detected,
                 initial_findings=checkpoint["findings"] if checkpoint else None,
+                initial_combos=checkpoint.get("combos") if checkpoint else None,
             )
             return ResultMessage(
                 job_id=msg.job_id,
@@ -106,7 +107,8 @@ async def process(
                 risk_detected=detection.before.risky,
                 risk_before=detection.before.risk,
                 findings=detection.before.findings,
-                details={"worker": settings.worker_name},
+                # 조합 경고 (② 2단계). 객체 findings 와 별개로 보여준다.
+                details={"worker": settings.worker_name, "combos": detection.before.combos},
             )
 
         async def transformed(output: Media):
@@ -165,6 +167,7 @@ async def process(
                 "model": settings.gemini_model,
                 "processed_findings": result.before.findings,
                 "remaining_risk": result.after.risky,
+                "combos": result.after.combos,
             },
         )
     finally:

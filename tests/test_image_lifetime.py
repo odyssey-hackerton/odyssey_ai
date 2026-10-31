@@ -30,7 +30,7 @@ async def test_detection_deletes_before_analysis_and_recovers_without_original(m
     detector = AsyncMock(return_value=[])
     monkeypatch.setattr("worker.pipeline.detect", detector)
 
-    async def analyze(media, findings):
+    async def analyze(media, findings, *_):
         assert media.image is None
         assert msg.object_key not in storage.objects
         assert await redis.get(f"{execution_key(msg)}:checkpoint")

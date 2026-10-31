@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     paddle_device: str = "cpu"  # "cpu" | "gpu:0"
     paddle_mkldnn: bool = False  # CPU oneDNN 가속. std::exception 이 나면 False 유지
 
+    # ② 위험 분석: 객체별 판정·조합 경고에 VLM 을 쓸지 (VLM_PROVIDER 를 따른다).
+    # false 면 ① 의 risk_level 로만 계산한다.
+    risk_use_vlm: bool = True
+
     # ⓪ 맥락: 국가+날짜의 사회 이슈 (stages/context.py). 키가 없으면 고정 규칙만 쓴다.
     tavily_api_key: SecretStr | None = None
     context_use_search: bool = True
