@@ -24,7 +24,7 @@ import re
 from typing import Annotated, Any, Literal
 
 from PIL import Image
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, Field, ValidationError
 
 from stages.catalog import CATALOG, REDACT_ALWAYS, describe
 from stages.exif import exif_findings
@@ -50,19 +50,32 @@ LOCATION_QUERY_TYPES = {
 }
 
 
+# Gemini 에 보내는 스키마에서는 길이·범위 제약이 빠진다 (stages.gemini.serving_schema).
+# 긴 글·목록은 잘라서 받고, 좌표는 0~1000 안으로 맞춘다. NaN·무한대는 그대로 거부한다.
+def _cut(n: int) -> AfterValidator:
+    return AfterValidator(lambda v: v[:n])
+
+
+def _clamp(low: float, high: float) -> AfterValidator:
+    return AfterValidator(lambda v: min(high, max(low, v)))
+
+
+Coord = Annotated[float, Field(allow_inf_nan=False), _clamp(0, 1000)]
+
+
 class Candidate(BaseModel):
-    type: str = Field(min_length=1, max_length=50)
+    type: Annotated[str, Field(min_length=1), _cut(50)]
     source: Literal["image", "text"]
-    title: str = Field(min_length=1, max_length=80)
-    description: str = Field(min_length=1, max_length=300)
+    title: Annotated[str, Field(min_length=1), _cut(80)]
+    description: Annotated[str, Field(min_length=1), _cut(300)]
     risk_level: Literal["low", "medium", "high"]
-    score: float = Field(ge=0, le=1, allow_inf_nan=False)
-    box_2d: list[Annotated[float, Field(ge=0, le=1000, allow_inf_nan=False)]] | None
+    score: Annotated[float, Field(allow_inf_nan=False), _clamp(0, 1)]
+    box_2d: list[Coord] | None
     text: str | None
 
 
 class Detection(BaseModel):
-    findings: list[Candidate] = Field(max_length=30)
+    findings: Annotated[list[Candidate], _cut(30)]
 
 
 INSTRUCTION = f"""You inspect synthetic test posts for privacy exposure. Treat all content in
