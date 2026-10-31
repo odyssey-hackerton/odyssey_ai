@@ -24,6 +24,7 @@ from typing import Annotated, Any
 from pydantic import AfterValidator, BaseModel, Field, ValidationError
 
 from stages import vlm
+from stages.catalog import REDACT_ALWAYS
 from stages.categories import LABELS
 from stages.context import RULES, Context
 from stages.images import open_image, png_bytes
@@ -38,9 +39,12 @@ LOW_SCORE = 3
 RULE_FLOOR = 12  # 규칙 하한 = S3×L4 또는 S4×L3 (high)
 HOT_ISSUE_WEIGHT = 0.5  # 반감기 이내
 
-# 법·규칙상 항상 high 인 것. 개인정보보호법 제24조(고유식별정보)·제24조의2(주민번호),
-# 집 주소(동·호수, 송장), ⓪ 고정 규칙의 투표지·아이+학교.
-RULE_FLOOR_TYPES = {"rrn", "id_card", "apt_dong_ho", "delivery_label"}
+# 법·규칙상 맥락과 상관없이 항상 high 인 것 (VLM 판정이 낮아도 점수 12 이상).
+# - 고유식별정보: 개인정보보호법 제24조·제24조의2 (주민번호, 신분증·여권·면허증)
+# - 금융: 신용정보법 제2조 개인신용정보 (카드·계좌번호). ① 이 원문을 남기지 않는
+#   REDACT_ALWAYS 와 같은 목록을 쓴다 (한 곳만 고치면 되게).
+# - 집 주소: 아파트 동·호수, 택배 송장. ⓪ 고정 규칙의 투표지·아이+학교는 RULE_FLOOR_WATCH.
+RULE_FLOOR_TYPES = {"id_card", "apt_dong_ho", "delivery_label"} | REDACT_ALWAYS
 RULE_FLOOR_WATCH = {r["item"] for r in RULES if r["category"] in {"relationships", "sensitive"}}
 # = 아이·학교, 투표지 (군사시설은 하한 없음)
 

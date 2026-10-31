@@ -172,3 +172,18 @@ async def test_only_exif_skips_vlm_step1(monkeypatch):
     exif = {"entity_id": "f0", "type": "metadata", "category": "location", "source": "exif"}
     findings, combos = await risk.judge(MEDIA, [exif])
     assert (findings[0]["severity"], findings[0]["likelihood"]) == (1, 1) and combos == []
+
+
+@pytest.mark.parametrize(
+    "type_", ["rrn", "id_card", "card_number", "account_number", "apt_dong_ho", "delivery_label"]
+)
+async def test_rule_floor_is_high_regardless_of_judgement(type_):
+    item = {
+        "entity_id": "f0",
+        "type": type_,
+        "category": "identity",
+        "severity": 1,
+        "likelihood": 1,
+    }
+    result = await risk.analyze(MEDIA, [item])
+    assert result.findings[0]["risk_level"] == "high" and result.risky
