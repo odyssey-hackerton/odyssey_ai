@@ -187,3 +187,21 @@ async def test_rule_floor_is_high_regardless_of_judgement(type_):
     }
     result = await risk.analyze(MEDIA, [item])
     assert result.findings[0]["risk_level"] == "high" and result.risky
+
+
+async def test_type_guide_only_for_listed_types(monkeypatch):
+    provider = AsyncMock(
+        side_effect=[{"objects": [judged(0, 2, 3), judged(1, 1, 1)]}, {"combos": []}]
+    )
+    monkeypatch.setattr(risk.vlm, "generate_json", provider)
+    await risk.judge(MEDIA, [finding(0, "bus_stop"), finding(1, "other")])
+    text = provider.call_args_list[0].args[0][-1]["text"]
+    assert "- bus_stop: S=2, L=2 (정류장 이름·번호가 읽히면 L4)" in text
+    assert "- other:" not in text and "- rrn:" not in text
+
+
+def test_type_guide_covers_catalog_except_free_and_exif():
+    from stages.catalog import CATALOG
+
+    exif = set(risk.EXIF_JUDGEMENT)
+    assert set(CATALOG) - set(risk.TYPE_GUIDE) - exif == {"other", "context_item"}

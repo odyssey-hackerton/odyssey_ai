@@ -140,7 +140,8 @@ STEP1 = f"""너는 SNS 사진의 개인정보 위험을 판정한다.
 {_SUBJECT}
 객체마다:
 - reason: 이 객체 하나로 모르는 사람이 무엇을 알 수 있는지. 한국어 1~2문장.
-- severity, likelihood: 아래 기준에서 하나씩. 객체 하나만 보고 판단한다 (조합은 따로 한다).
+- severity, likelihood: 'type별 기준'이 있으면 그 값에서 시작하고, 없으면 아래 기준으로 고른다.
+  객체 하나만 보고 판단한다 (조합은 따로 한다).
 - issue: '오늘의 사회 이슈' 중 이 객체와 직접 관련된 이슈 제목 그대로, 없으면 빈 문자열.
 {_SCALE}"""
 
@@ -259,6 +260,54 @@ async def _ask(model: type[BaseModel], content: list[dict[str, Any]], instructio
         raise vlm.AIServiceError("risk judgement failed schema validation") from None
 
 
+# type 별 판정 기준. 모델은 이 값에서 시작하고, 사진에서 보이는 근거가 있을 때만 조정한다.
+# S 는 SEVERITY_EXAMPLES (CNIL PIA 4단계, 개인정보보호법 제23·24조, Im2GPS) 에 맞춰 배치,
+# L 은 LIKELIHOOD (글자가 그대로 읽히면 4 = 사진만 보면 바로 앎).
+# 표에 없는 type (other, context_item 등) 은 모델이 SEVERITY_EXAMPLES 로 판단한다.
+# EXIF 항목은 EXIF_JUDGEMENT 로 코드가 판정하므로 여기 없다.
+# 형식: type → (S, L, 조정 기준)
+TYPE_GUIDE: dict[str, tuple[int, int, str]] = {
+    "face": (2, 3, "아이 얼굴이면 S3. 멀리 작게 찍힌 얼굴이면 L2"),
+    "name": (2, 3, "실명 전체가 읽히면 L4. 가게·브랜드 이름이면 S1"),
+    "phone_number": (2, 4, "가게·회사 공개 번호면 S1"),
+    "email": (2, 4, "업무용 공개 주소면 S1"),
+    "address": (3, 4, "가게·공공기관 주소면 S2. 일부만 보이면 L3"),
+    "apt_dong_ho": (3, 4, "집 위치"),
+    "zipcode": (1, 3, ""),
+    "rrn": (4, 4, "뒷자리가 가려져 있으면 S3"),
+    "account_number": (3, 4, "일부만 보이면 L2"),
+    "card_number": (4, 4, "일부만 보이면 S3, L2"),
+    "business_id": (1, 4, ""),
+    "license_plate": (2, 4, "일부만 읽히면 L2"),
+    "tracking_number": (3, 3, "배송 조회로 주소를 알 수 있음"),
+    "delivery_label": (3, 4, "이름·주소·전화가 함께 있음"),
+    "pharmacy_name": (2, 3, "병원 종류(정신과·산부인과 등)가 드러나면 S3"),
+    "store_name": (2, 3, "흔치 않은 상호가 또렷이 읽히면 L4. 전국 프랜차이즈면 L2"),
+    "school_sign": (3, 3, "학교 이름이 읽히면 L4"),
+    "bus_stop": (2, 2, "정류장 이름·번호가 읽히면 L4"),
+    "id_card": (4, 4, "신분증·여권·면허증"),
+    "user_id": (2, 4, "SNS 계정이면 다른 게시물과 연결됨"),
+    "url": (1, 3, "개인 페이지면 S2"),
+    "date": (1, 4, ""),
+    "absence_period": (3, 4, "집을 비우는 기간"),
+}
+
+
+def _guide_lines(findings: list[dict[str, Any]]) -> str:
+    """객체 목록에 있는 type 의 기준만 넣는다 (프롬프트를 짧게)."""
+    types = dict.fromkeys(f["type"] for f in findings if f.get("type") in TYPE_GUIDE)
+    if not types:
+        return ""
+    lines = []
+    for t in types:
+        s, lk, note = TYPE_GUIDE[t]
+        lines.append(f"- {t}: S={s}, L={lk}" + (f" ({note})" if note else ""))
+    return (
+        "\ntype별 기준 (이 값에서 시작하고, 사진에서 보이는 근거가 있을 때만 조정한다):\n"
+        + "\n".join(lines)
+    )
+
+
 async def _judge_objects(
     base: list[dict[str, Any]], findings: list[dict[str, Any]], size: tuple[int, int] | None
 ) -> dict[str, _Judgement]:
@@ -271,7 +320,8 @@ async def _judge_objects(
     if not pending:
         return judged
     for _ in range(2):
-        content = [*base, {"type": "text", "text": "객체 목록:\n" + _object_lines(pending, size)}]
+        text = "객체 목록:\n" + _object_lines(pending, size) + _guide_lines(pending)
+        content = [*base, {"type": "text", "text": text}]
         step1 = await _ask(_Step1, content, STEP1)
         wanted = {f["entity_id"] for f in pending}
         for j in step1.objects:
