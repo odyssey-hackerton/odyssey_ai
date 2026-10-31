@@ -8,9 +8,10 @@ import asyncio
 import base64
 import json
 import logging
-from typing import Any, Literal
+import re
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, ValidationError
 
 from stages.gemini import AIServiceError, generate_json
 from stages.images import open_image, png_bytes
@@ -25,16 +26,27 @@ NAME = "llm_geotrace"
 
 
 # ---- 응답 형식 ----
+# Gemini 는 길이·범위 제약이 많은 스키마를 "too many states" 로 거부한다.
+# 그래서 스키마에는 제약을 넣지 않고, 받은 뒤에 잘라내거나 범위 안으로 맞춘다.
+Conf = Annotated[float, AfterValidator(lambda v: min(1.0, max(0.0, v)))]
+Lat = Annotated[float, AfterValidator(lambda v: min(90.0, max(-90.0, v)))]
+Lon = Annotated[float, AfterValidator(lambda v: min(180.0, max(-180.0, v)))]
+
+
+def _cut(n: int):
+    return AfterValidator(lambda v: v[:n])
+
+
 class Clue(BaseModel):
     type: str
-    value: str = Field(max_length=300)
-    confidence: float = Field(ge=0, le=1)
+    value: Annotated[str, _cut(300)]
+    confidence: Conf
     entity_id: str | None = None
     bbox: list[float] | None = None
 
 
 class Stage1(BaseModel):
-    clues: list[Clue] = Field(max_length=40)
+    clues: Annotated[list[Clue], _cut(40)]
     likely_continents: list[str] = []
     likely_hemisphere: str = "unknown"
     urban_or_rural: str = "unknown"
@@ -45,17 +57,17 @@ class Stage1(BaseModel):
 
 class Search(BaseModel):
     tool: Literal["kakao_local_search", "web_search"]
-    query: str = Field(min_length=1, max_length=100)
+    query: Annotated[str, _cut(100)]
 
 
 class Plan(BaseModel):
-    searches: list[Search] = Field(max_length=8)
+    searches: Annotated[list[Search], _cut(8)]
 
 
 class Step(BaseModel):
     hypothesis: str = ""
     evidence: str = ""
-    confidence: float = Field(default=0.0, ge=0, le=1)
+    confidence: Conf = 0.0
 
 
 class Chain(BaseModel):
@@ -70,18 +82,18 @@ class Alternative(BaseModel):
     description: str
     latitude: float
     longitude: float
-    confidence: float = Field(ge=0, le=1)
+    confidence: Conf
 
 
 class Final(BaseModel):
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
+    latitude: Lat
+    longitude: Lon
     description: str
     precision_level: str
-    confidence: float = Field(ge=0, le=1)
+    confidence: Conf
     rationale: str = ""
     clues_used: list[str] = []
-    alternatives: list[Alternative] = Field(default=[], max_length=3)
+    alternatives: Annotated[list[Alternative], _cut(3)] = []
 
 
 class Stage2(BaseModel):
@@ -102,8 +114,19 @@ def attack_image(image_bytes: bytes) -> dict[str, str]:
     }
 
 
-async def _ask(model: type[BaseModel], content: list[dict[str, Any]], instruction: str):
-    raw = await generate_json(content, model.model_json_schema(), instruction)
+async def _ask(
+    model: type[BaseModel],
+    content: list[dict[str, Any]],
+    instruction: str,
+    thinking_level: str | None = None,
+):
+    raw = await generate_json(
+        content,
+        model.model_json_schema(),
+        instruction,
+        max_output_tokens=get_location_settings().attack_max_output_tokens,
+        thinking_level=thinking_level,
+    )
     try:
         return model.model_validate(raw)
     except ValidationError:
@@ -111,11 +134,12 @@ async def _ask(model: type[BaseModel], content: list[dict[str, Any]], instructio
 
 
 def summarize_clues(stage1: Stage1) -> str:
+    """단서에 c1, c2… 번호를 붙여 보여준다. Stage 2 는 이 번호로 clues_used 를 보고한다."""
     return "\n" + "\n".join(
-        f"- [{c.type}] {c.value} (conf {c.confidence:.2f}"
+        f"- c{i} [{c.type}] {c.value} (conf {c.confidence:.2f}"
         + (f", {c.entity_id}" if c.entity_id else "")
         + ")"
-        for c in stage1.clues
+        for i, c in enumerate(stage1.clues, 1)
     )
 
 
@@ -137,26 +161,78 @@ async def run_searches(plan: Plan, budget: int) -> tuple[list[PoiResult], list[s
     return [p for p in poi if p is not None], texts
 
 
-def new_clues(stage1: Stage1, image_id: str = "img") -> list[dict[str, Any]]:
-    """①이 못 찾은 단서에 a1, a2… 번호를 붙인다 (I/O 명세 5-1 source=agent2)."""
-    out = []
-    for c in stage1.clues:
-        if c.entity_id is None and c.confidence >= 0.5:
-            out.append(
+def image_size(image_bytes: bytes) -> tuple[int, int]:
+    """공격자에게 보낸 사진과 같은 방향(EXIF 회전 적용)의 원본 크기."""
+    return open_image(image_bytes).size
+
+
+def to_pixels(box: list[float] | None, size: tuple[int, int]) -> list[int] | None:
+    """Gemini 박스 [ymin, xmin, ymax, xmax] (0~1000) → 원본 픽셀 [x1, y1, x2, y2]."""
+    if not box or len(box) != 4:
+        return None
+    w, h = size
+    y1, x1, y2, x2 = (min(1000.0, max(0.0, v)) for v in box)
+    x1, x2 = sorted((x1, x2))
+    y1, y2 = sorted((y1, y2))
+    if x2 - x1 < 1 or y2 - y1 < 1:
+        return None
+    return [round(x1 * w / 1000), round(y1 * h / 1000), round(x2 * w / 1000), round(y2 * h / 1000)]
+
+
+def _used_positions(used: list[str], clues: list[Clue]) -> list[int]:
+    """clues_used 를 단서 위치로 바꾼다. c3 같은 번호, entity_id, 단서 문장 순으로 맞춘다."""
+    out: list[int] = []
+    for u in used:
+        u = u.strip()
+        m = re.fullmatch(r"[cC](\d+)", u)
+        if m and 1 <= int(m.group(1)) <= len(clues):
+            i = int(m.group(1)) - 1
+        else:
+            i = next(
+                (
+                    k
+                    for k, c in enumerate(clues)
+                    if u == c.entity_id or u == c.value or (len(u) > 3 and u in c.value)
+                ),
+                None,
+            )
+        if i is not None and i not in out:
+            out.append(i)
+    return out
+
+
+def label_clues(
+    clues: list[Clue], used: list[str], image_id: str, size: tuple[int, int]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """①이 못 찾은 단서에 a1, a2… 번호를 붙이고 (I/O 명세 5-1 source=agent2),
+    clues_used 를 entity_id 목록으로 바꾼다. 공격자가 쓴 단서는 신뢰도가 낮아도 번호를 받는다."""
+    positions = _used_positions(used, clues)
+    ids: list[str | None] = []
+    new: list[dict[str, Any]] = []
+    for i, c in enumerate(clues):
+        if c.entity_id:
+            ids.append(c.entity_id)
+        elif c.confidence >= 0.5 or i in positions:
+            eid = f"{image_id}:a{len(new) + 1}"
+            ids.append(eid)
+            new.append(
                 {
-                    "entity_id": f"{image_id}:a{len(out) + 1}",
+                    "entity_id": eid,
                     "source": "agent2",
                     "type": c.type,
                     "value": c.value,
                     "confidence": c.confidence,
-                    "box_2d": c.bbox,
+                    "bbox": to_pixels(c.bbox, size),
                 }
             )
-    return out
+        else:
+            ids.append(None)
+    return new, [ids[i] for i in positions if ids[i]]
 
 
-def to_guess(stage2: Stage2, stage1: Stage1, image_id: str) -> Guess:
+def to_guess(stage2: Stage2, stage1: Stage1, image_id: str, size: tuple[int, int]) -> Guess:
     f = stage2.final_answer
+    new, used = label_clues(stage1.clues, f.clues_used, image_id, size)
     level = map_paper_level(f.precision_level)
     chain = stage2.chain_of_thought
     steps = {
@@ -180,10 +256,10 @@ def to_guess(stage2: Stage2, stage1: Stage1, image_id: str) -> Guess:
         lon=f.longitude,
         radius_km=RADIUS_KM[level],
         confidence=f.confidence,
-        clues_used=f.clues_used[:20],
+        clues_used=used[:20],
         reasoning=reasoning,
         alternatives=[a.model_dump() for a in f.alternatives],
-        new_clues=new_clues(stage1, image_id),
+        new_clues=new,
     )
 
 
@@ -192,7 +268,6 @@ async def attack(
     findings: list[dict[str, Any]],
     *,
     poi_results: list[PoiResult] | None = None,
-    geoclip_regions: str = "(none)",
     image_id: str = "img",
 ) -> tuple[Guess, list[PoiResult]]:
     """공격 1회. 반환: (추정, 이번에 쓴 지도 검색 결과 전체 — 근거 확인에 쓴다)."""
@@ -215,7 +290,6 @@ async def attack(
             prompts.PLAN.format(
                 clue_summary=clue_summary,
                 poi_results=clue_utils.summarize_poi(poi),
-                geoclip_regions=geoclip_regions,
                 budget=s.search_budget,
             ),
         )
@@ -230,8 +304,8 @@ async def attack(
             clue_raw_json=json.dumps(stage1.model_dump(), ensure_ascii=False),
             poi_results=clue_utils.summarize_poi(poi),
             search_results="\n".join(searched) or "(none)",
-            geoclip_regions=geoclip_regions,
             alt_threshold=s.alt_threshold,
         ),
     )
-    return to_guess(stage2, stage1, image_id), poi
+    size = await asyncio.to_thread(image_size, image_bytes)
+    return to_guess(stage2, stage1, image_id, size), poi

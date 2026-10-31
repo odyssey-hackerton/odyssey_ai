@@ -88,7 +88,7 @@ class PoiResult(BaseModel):
 
 
 class Guess(BaseModel):
-    attacker: str  # llm_geotrace | llm_direct | geoclip | llm_adaptive
+    attacker: str  # llm_geotrace | llm_direct
     model: str
     level: Level = Level.UNKNOWN
     region: str | None = None  # 예: "서울 성북구 보문동"
