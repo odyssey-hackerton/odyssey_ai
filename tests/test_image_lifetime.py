@@ -48,7 +48,7 @@ async def test_empty_findings_still_strip_metadata_and_delete_before_verificatio
     original = storage.objects[msg.object_key]
     msg = msg.model_copy(update={"user_choices": [], "initial_findings": []})
 
-    async def verify(media):
+    async def verify(media, watchlist=None):
         assert msg.object_key not in storage.objects
         assert edited_key(msg) in storage.objects
         with Image.open(BytesIO(media.image)) as image:

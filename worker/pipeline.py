@@ -1,4 +1,4 @@
-"""① 탐지 → ② 위험 분석 → ③ 변환 → ② 재검증 (위험이 남아 있으면 최대 max_iterations 회 반복).
+"""⓪ 맥락 → ① 탐지 → ② 위험 분석 → ③ 변환 → ② 재검증 (위험이 남으면 최대 max_iterations 회 반복).
 
 단계가 바뀔 때마다 report 로 진행 상태를 알리면 프론트 진행 표시에 그대로 나온다.
 """
@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from stages.context import build_context
 from stages.detect import detect
 from stages.risk import analyze
 from stages.transform import transform
@@ -27,6 +28,12 @@ class PipelineResult:
     before: Assessment  # 처리 전 분석
     after: Assessment  # 마지막 재검증 결과 (처리하지 않았으면 before 와 같다)
     iterations: int
+
+
+async def _detect(media: Media) -> list[dict[str, Any]]:
+    """⓪ 맥락(하루 캐시) → ① 탐지. 맥락은 실패하지 않는다 (최악이면 고정 규칙만)."""
+    context = await build_context()
+    return await detect(media, watchlist=context.watchlist)
 
 
 def _apply_user_choices(assessment: Assessment, choices: list[UserChoice]) -> Assessment:
@@ -54,7 +61,7 @@ async def run_detection_phase(
 ) -> DetectionResult:
     """Phase 1: 탐지·분석만 실행하고 결과를 반환한다. 변환은 하지 않는다."""
     await report(JobStatus.DETECTING, message="개인정보 탐지 중")
-    findings = initial_findings if initial_findings is not None else await detect(media)
+    findings = initial_findings if initial_findings is not None else await _detect(media)
     if on_detected is not None:
         await on_detected(findings)
         media.image = None
@@ -82,7 +89,7 @@ async def run_pipeline(
         findings = initial_findings
     else:
         await report(JobStatus.DETECTING, message="개인정보 탐지 중")
-        findings = await detect(media)
+        findings = await _detect(media)
 
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
     before = await analyze(media, findings)
@@ -104,7 +111,7 @@ async def run_pipeline(
             media.image = None
 
         await report(JobStatus.VERIFYING, iteration=iterations, message="재검증 중")
-        after = await analyze(current, await detect(current))
+        after = await analyze(current, await _detect(current))
 
         # 사용자가 남겨둔 단서를 자동 반복으로 다시 덮어쓰지 않는다.
         if user_choices is not None:

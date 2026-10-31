@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from stages import vlm
-from stages.catalog import CATALOG
+from stages.catalog import CATALOG, TYPE_CATEGORY
 from stages.categories import CATEGORIES, LABELS
 from stages.http import SearchError, post_json
 from worker.config import get_settings
@@ -176,7 +176,7 @@ _INSTRUCTION = (
     "- watchlist: 이 이슈 때문에 사진 속에서 찾아봐야 할 물건·글자·장면 (예: 특정 집회 피켓, "
     "선거 홍보물, 사고 현장 표지). "
     "다음 항목은 이미 따로 찾으니 넣지 않는다: "
-    + ", ".join(title for _, title, _ in CATALOG.values())
+    + ", ".join(CATALOG[t][1] for t in TYPE_CATEGORY)
     + ". issue 에는 issues 에 넣은 이슈 제목 그대로.\n"
     "- note: ② 위험 분석가에게 줄 2~4문장 요약. 어떤 사진이 왜 더 위험해지는지.\n"
     "카테고리: " + ", ".join(f"{key}={label}" for key, label in LABELS.items()) + "\n"
