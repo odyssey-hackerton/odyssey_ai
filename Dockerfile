@@ -11,6 +11,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never \
     PATH="/opt/venv/bin:$PATH"
 
+# PaddleOCR(opencv) 런타임 라이브러리
+RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir uv==0.11.32
 
 WORKDIR /srv
@@ -21,6 +24,10 @@ RUN uv sync --frozen --no-dev
 
 COPY worker/ worker/
 COPY stages/ stages/
+COPY scripts/download-models.sh scripts/
+# 모델은 이미지에 굽는다 (Veil ~150MB, PP-OCRv5 korean ~20MB). 빌드 시 네트워크 필요.
+ENV PADDLE_PDX_CACHE_HOME=/srv/.paddlex HF_HOME=/srv/.hf
+RUN bash scripts/download-models.sh
 RUN useradd --create-home --uid 1000 app && chown -R app /srv
 USER app
 
