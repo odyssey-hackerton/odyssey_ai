@@ -55,6 +55,8 @@ async def test_real_edit_flow_uses_snapshot_and_verifies_once(monkeypatch):
         ]
     )
     monkeypatch.setattr("stages.detect.generate_json", provider)
+    crop = AsyncMock(return_value={"complete": True, "exposes": []})
+    monkeypatch.setattr("stages.risk.generate_json", crop)
     findings = await detect(media)
     assert findings[1]["bbox"] == [10, 8, 50, 40]
     assert "text" not in findings[0] and len(findings[0]["spans"]) == 2
@@ -66,7 +68,10 @@ async def test_real_edit_flow_uses_snapshot_and_verifies_once(monkeypatch):
         user_choices=[UserChoice(idx=0, action="mask"), UserChoice(idx=1, action="skip")],
     )
     assert result.output.text == "[가림] 그대로 [가림]"
-    assert result.iterations == 1 and result.after.risky
+    # 남겨 둔 전화번호는 재검증에서 다시 잡힌다. 단독 연락처는 ENISA 기준 낮음(1×0.75+0.5).
+    assert result.iterations == 1 and not result.after.risky
+    assert [f["risk_level"] for f in result.after.findings] == ["low"]
+    crop.assert_awaited_once()  # 재검증 때 남은 조각 하나만 VLM 에 넣는다
     assert provider.await_count == 2  # 최초 분석 + 재검증, 선택 전 재탐지 없음
     assert open_image(result.output.image).getpixel((20, 20)) == (255, 255, 255)
     masked = await transform(media, Assessment(risky=True, risk=0.9, findings=[findings[1]]))
