@@ -69,7 +69,7 @@ async def test_enrich_reads_each_crop_then_combines(monkeypatch):
     image = png_bytes(Image.new("RGB", (100, 100), "white"))
     calls = []
 
-    async def vlm(content, schema, instruction):
+    async def vlm(content, schema, instruction, provider=None):
         calls.append(schema["title"])
         if schema["title"] == "CropInfo":
             return {"complete": False, "exposes": [{"kind": "location", "description": "동네"}]}
@@ -96,7 +96,10 @@ async def test_enrich_reads_each_crop_then_combines(monkeypatch):
 
 
 async def test_enrich_can_be_disabled(monkeypatch):
-    monkeypatch.setattr("stages.risk.get_settings", lambda: type("S", (), {"risk_use_vlm": False}))
+    monkeypatch.setattr(
+        "stages.risk.get_settings",
+        lambda: type("S", (), {"risk_use_vlm": False, "risk_vlm_provider": None}),
+    )
     monkeypatch.setattr("stages.risk.generate_json", AsyncMock(side_effect=AssertionError))
     findings = [f("face", bbox=[0, 0, 5, 5]), f("name")]
     assert await enrich(Media(image=png_bytes(Image.new("RGB", (9, 9)))), findings) == findings
@@ -108,3 +111,11 @@ async def test_invalid_vlm_output_fails_closed(monkeypatch):
         await enrich(
             Media(image=png_bytes(Image.new("RGB", (20, 20)))), [f("face", bbox=[0, 0, 10, 10])]
         )
+
+
+async def test_risk_provider_can_differ_from_detection(monkeypatch):
+    from stages import qwen, vlm
+
+    monkeypatch.setattr(gemini, "generate_json", AsyncMock(side_effect=AssertionError))
+    monkeypatch.setattr(qwen, "generate_json", AsyncMock(return_value={"p": "q"}))
+    assert (await vlm.generate_json([], {}, "i", provider="qwen"))["p"] == "q"

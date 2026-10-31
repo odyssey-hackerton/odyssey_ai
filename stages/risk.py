@@ -192,7 +192,9 @@ def _crop(image: Image.Image, bbox: list[float]) -> Image.Image | None:
 
 
 async def _validate(model: type[BaseModel], content, instruction: str) -> BaseModel:
-    raw = await generate_json(content, model.model_json_schema(), instruction)
+    # 제공자는 설정으로 바꾼다 (RISK_VLM_PROVIDER=qwen 이면 GPU 서버 로컬 VLM). 코드 변경 없음.
+    provider = get_settings().risk_vlm_provider
+    raw = await generate_json(content, model.model_json_schema(), instruction, provider=provider)
     try:
         return model.model_validate(raw)
     except ValidationError:
