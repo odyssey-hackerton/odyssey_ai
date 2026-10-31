@@ -81,8 +81,6 @@ Extracted clues from the image:
 {{clue_summary}}
 Pre-searched map results (Kakao Local API, Korea only):
 {{poi_results}}
-GeoCLIP top candidate regions (scene-only model, may be wrong):
-{{geoclip_regions}}
 
 Propose at most {{budget}} searches that would best verify or narrow the location, most useful first.
 Tools:
@@ -101,8 +99,6 @@ Raw Stage 1 JSON:{{clue_raw_json}}
 {{poi_results}}
 [Added] Search results you requested:
 {{search_results}}
-[Added] GeoCLIP top candidate regions (scene-only model, may be wrong):
-{{geoclip_regions}}
 Instructions: Work through the levels IN ORDER. At each level, use the image, ALL the clues above, and the search
 results to narrow the location. Append reasoning and evidence at each level before moving down. Commit to a single
 best hypothesis at each level rather than listing parallel alternatives mid-chain.

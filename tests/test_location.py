@@ -8,7 +8,6 @@ from PIL import Image
 from stages.location import (
     clues,
     direct_attack,
-    geoclip_attack,
     geotrace_attack,
     grounding,
     kakao,
@@ -45,13 +44,12 @@ def jpeg_with_gps() -> bytes:
 
 def test_prompts_format_without_missing_keys():
     prompts.STAGE1.format(entities_summary="-")
-    prompts.PLAN.format(clue_summary="-", poi_results="-", geoclip_regions="-", budget=4)
+    prompts.PLAN.format(clue_summary="-", poi_results="-", budget=4)
     text = prompts.STAGE2.format(
         clue_summary="-",
         clue_raw_json="{}",
         poi_results="-",
         search_results="-",
-        geoclip_regions="-",
         alt_threshold=0.5,
     )
     assert "0.50" in text
@@ -93,14 +91,6 @@ def test_grounding_far_from_map_hit_downgrades():
 def test_grounding_without_map_results():
     out = grounding.ground(guess(), [])
     assert out.grounded is False and out.ground_note == "unverified" and out.confidence == 0.72
-
-
-def test_geoclip_concentrated_vs_spread():
-    seoul = [(37.58, 127.01, 0.4), (37.59, 127.02, 0.3), (37.57, 127.0, 0.2)]
-    g = geoclip_attack.to_guess(seoul)
-    assert g.level == Level.DISTRICT and g.confidence > 0.9 and g.grounded is False
-    world = [(37.5, 127.0, 0.3), (35.6, 139.7, 0.3), (48.8, 2.3, 0.3)]
-    assert geoclip_attack.to_guess(world).level in {Level.COUNTRY, Level.UNKNOWN}
 
 
 STAGE1 = {

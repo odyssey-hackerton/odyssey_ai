@@ -24,7 +24,7 @@ def nearest(guess: Guess, poi: list[PoiResult]) -> tuple[float, PoiResult] | Non
 
 
 def ground(guess: Guess, poi: list[PoiResult]) -> Guess:
-    """GeoCLIP 처럼 이미 판정된(grounded 가 정해진) 결과는 건드리지 않는다."""
+    """이미 판정된(grounded 가 정해진) 결과는 건드리지 않는다."""
     if guess.grounded is not None:
         return guess
     out = guess.model_copy(deep=True)
