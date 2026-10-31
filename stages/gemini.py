@@ -51,7 +51,7 @@ async def generate_json(
     max_output_tokens: int = 4096,
     thinking_level: str | None = None,
 ) -> dict[str, Any]:
-    """max_output_tokens 는 생각(thinking) 토큰까지 포함한다. 생각이 길면 답이 잘려 incomplete 가 된다."""
+    """max_output_tokens 는 생각(thinking) 토큰까지 포함한다. 넘치면 답이 잘린다."""
     generation_config: dict[str, Any] = {"temperature": 0.1, "max_output_tokens": max_output_tokens}
     if thinking_level:
         generation_config["thinking_level"] = thinking_level  # low | medium | high
