@@ -90,7 +90,7 @@ unset RP
 docker logs -f odyssey-worker
 ```
 
-Gemini 호출에는 무료 프로젝트의 `GEMINI_API_KEY`도 환경변수로 넣습니다. 사진 작업까지 처리하려면 워커용 AWS 키를 함께 넣습니다 (`-e AWS_ACCESS_KEY_ID=... -e AWS_SECRET_ACCESS_KEY=...`, 권한은 `originals/*` 읽기와 `results/*` 쓰기).
+Gemini 호출에는 무료 프로젝트의 `GEMINI_API_KEY`도 환경변수로 넣습니다. 사진 작업까지 처리하려면 워커용 AWS 키를 함께 넣습니다 (`-e AWS_ACCESS_KEY_ID=... -e AWS_SECRET_ACCESS_KEY=...`, 권한은 백엔드 README의 최신 워커 IAM 예시 참조: 원본/임시 편집본 읽기·쓰기·버전 삭제 및 결과 쓰기).
 
 ### 4. 업데이트·확인
 
@@ -104,3 +104,22 @@ docker rm -f odyssey-worker
 - 일반 서버 Mock 워커는 꺼 둡니다 (`.env`의 `COMPOSE_PROFILES=mock` 주석 처리 후 `docker compose stop mock-worker`). 켜 두면 작업이 두 워커에 나뉘어 갑니다.
 - 일반 서버나 Redis가 재시작되어도 워커는 죽지 않고 5초마다 다시 붙습니다.
 - 처리 도중 워커가 죽으면 그 작업은 10분 뒤 다시 가져와 처리합니다.
+
+
+## 원본 수명과 재시도
+
+큐 계약 v2를 사용한다. 백엔드와 함께 업데이트해야 하며 모든 작업·결과에 `execution_id`가 필요하다.
+기본 버킷은 `odyssey-hackarton-images`다. `originals/*`는 탐지 직후 삭제하고,
+편집 입력은 브라우저가 다시 업로드한 파일을 사용한다. 최초 findings 스냅샷으로 편집한다.
+탐지 결과와 편집 결과 체크포인트를 먼저 저장하므로 원본 삭제 후 재시작해도 이어서 처리한다.
+임시 편집본은 originals/에 두고 검증 종료 시 삭제한다. 삭제 실패는 결과 발행·ack 없이 재시도한다. 체크포인트 기록 자체가 실패해도 원본 삭제를 우선하며, 이 경우 재업로드가 필요할 수 있다.
+완료 결과는 기본 24시간 Redis에 캐시한다. 실행 잠금과 백엔드의 실행 ID 검증으로 이전 작업이
+새 상태를 덮어쓰지 못하게 한다. 체크포인트 만료 후 복구할 수 없는 작업은 재업로드가 필요하다.
+
+탐지 항목 0개에서도 transform을 실행해 메타데이터를 제거한다. 기존의 원본 바이트 그대로
+results/로 복사하는 경로는 사용하지 않는다. skip한 픽셀은 결과에도 남으며 DONE은 안전 보증이 아니다.
+S3 삭제는 해당 키의 과거 버전과 삭제 마커까지 지운다. 버킷의 ListBucketVersions와
+originals/*의 GetObject/PutObject/DeleteObject/DeleteObjectVersion 권한이 필요하다.
+Object Lock 등으로 삭제가 거절되면 작업은 완료되지 않는다. 운영 버킷 설정은 별도 확인해야 한다.
+
+투명 PNG/WebP는 흰색 배경에 알파 합성한 뒤 RGB로 처리하여, 투명 픽셀에 숨은 RGB가 탐지·편집 결과에서 드러나지 않게 한다. 해당 회귀 테스트를 추가했다.

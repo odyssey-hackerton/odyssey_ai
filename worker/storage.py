@@ -46,3 +46,25 @@ class Storage:
             Body=data,
             ContentType=content_type,
         )
+
+    async def delete(self, key: str) -> None:
+        """Delete the exact temporary key, including retained S3 versions."""
+        if not key.startswith("originals/"):
+            raise ValueError("only temporary originals may be deleted")
+
+        def _delete() -> None:
+            pages = self._client.get_paginator("list_object_versions")
+            for page in pages.paginate(Bucket=self.bucket, Prefix=key):
+                objects = [
+                    {"Key": key, "VersionId": item["VersionId"]}
+                    for item in page.get("Versions", []) + page.get("DeleteMarkers", [])
+                    if item["Key"] == key
+                ]
+                if objects:
+                    result = self._client.delete_objects(
+                        Bucket=self.bucket, Delete={"Objects": objects, "Quiet": True}
+                    )
+                    if result.get("Errors"):
+                        raise RuntimeError("temporary image deletion failed")
+
+        await asyncio.to_thread(_delete)

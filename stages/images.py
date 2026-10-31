@@ -17,7 +17,13 @@ def open_image(data: bytes) -> Image.Image:
             if original.width * original.height > 25_000_000:
                 raise ValueError("image exceeds 25 megapixels")
             original.load()
-            return ImageOps.exif_transpose(original).convert("RGB")
+            image = ImageOps.exif_transpose(original)
+            if "A" in image.getbands() or "transparency" in image.info:
+                # 투명 픽셀의 숨은 RGB 값이 결과에서 드러나지 않도록 합성한다.
+                image = Image.alpha_composite(
+                    Image.new("RGBA", image.size, "white"), image.convert("RGBA")
+                )
+            return image.convert("RGB")
 
 
 def png_bytes(image: Image.Image) -> bytes:

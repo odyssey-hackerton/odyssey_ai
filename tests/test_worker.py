@@ -22,6 +22,9 @@ class FakeStorage:
     async def put(self, key: str, data: bytes, content_type: str) -> None:
         self.objects[key] = data
 
+    async def delete(self, key):
+        self.objects.pop(key, None)
+
 
 class FakePipe:
     def __init__(self, store: dict) -> None:
@@ -46,6 +49,32 @@ class FakePipe:
 class FakeRedis:
     def __init__(self) -> None:
         self.progress: dict[str, list[dict]] = {}
+        self.values = {}
+        self.results = []
+        self.acks = []
+        self.locks = {}
+
+    async def get(self, key):
+        return self.values.get(key)
+
+    async def setex(self, key, ttl, value):
+        self.values[key] = value
+
+    async def delete(self, key):
+        self.values.pop(key, None)
+
+    async def xadd(self, stream, fields, **kwargs):
+        self.results.append(fields)
+
+    async def xack(self, *args):
+        self.acks.append(args)
+
+    def lock(self, key, **kwargs):
+        from unittest.mock import AsyncMock
+
+        if key not in self.locks:
+            self.locks[key] = AsyncMock(acquire=AsyncMock(return_value=True))
+        return self.locks[key]
 
     def pipeline(self, transaction=True):
         return FakePipe(self.progress)
@@ -54,6 +83,7 @@ class FakeRedis:
 def job(input_type, object_key=None, text=None) -> JobMessage:
     return JobMessage(
         job_id=uuid.uuid4(),
+        execution_id=uuid.uuid4(),
         input_type=input_type,
         object_key=object_key,
         text=text,

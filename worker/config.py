@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # AWS S3. 사진 작업에만 필요하다 (글만 있는 작업은 S3를 쓰지 않는다).
-    s3_bucket: str = "odyssey-images"
+    s3_bucket: str = "odyssey-hackarton-images"
     s3_region: str = "ap-northeast-2"
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     worker_name: str = f"worker-{socket.gethostname()}"
     # 처리 도중 워커가 죽어 남은 작업을 이 시간(초)이 지나면 다시 가져온다.
     # 작업 하나가 이보다 오래 걸리면 늘린다.
-    claim_idle_seconds: int = 600
+    claim_idle_seconds: int = Field(default=600, ge=3)
 
 
 @lru_cache

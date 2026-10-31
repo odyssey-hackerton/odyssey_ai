@@ -45,10 +45,19 @@ def _apply_user_choices(assessment: Assessment, choices: list[UserChoice]) -> As
     return Assessment(risky=assessment.risky, risk=assessment.risk, findings=findings)
 
 
-async def run_detection_phase(media: Media, *, report: Report) -> DetectionResult:
+async def run_detection_phase(
+    media: Media,
+    *,
+    report: Report,
+    initial_findings: list[dict[str, Any]] | None = None,
+    on_detected: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
+) -> DetectionResult:
     """Phase 1: 탐지·분석만 실행하고 결과를 반환한다. 변환은 하지 않는다."""
     await report(JobStatus.DETECTING, message="개인정보 탐지 중")
-    findings = await detect(media)
+    findings = initial_findings if initial_findings is not None else await detect(media)
+    if on_detected is not None:
+        await on_detected(findings)
+        media.image = None
 
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
     before = await analyze(media, findings)
@@ -63,6 +72,8 @@ async def run_pipeline(
     report: Report,
     user_choices: list[UserChoice] | None = None,
     initial_findings: list[dict[str, Any]] | None = None,
+    resume_output: Media | None = None,
+    on_transformed: Callable[[Media], Awaitable[None]] | None = None,
 ) -> PipelineResult:
     """Phase 2: 최초 탐지 결과에 사용자 선택을 반영해 변환하고 한 번 재검증한다."""
     if user_choices is not None:
@@ -81,10 +92,16 @@ async def run_pipeline(
         before = _apply_user_choices(before, user_choices)
 
     current, after, iterations = media, before, 0
-    while after.risky and iterations < max_iterations:
+    while (
+        after.risky or (user_choices is not None and iterations == 0)
+    ) and iterations < max_iterations:
         iterations += 1
         await report(JobStatus.TRANSFORMING, iteration=iterations, message="보호 처리 중")
-        current = await transform(current, after)
+        current = resume_output if resume_output is not None else await transform(current, after)
+        resume_output = None
+        if on_transformed is not None:
+            await on_transformed(current)
+            media.image = None
 
         await report(JobStatus.VERIFYING, iteration=iterations, message="재검증 중")
         after = await analyze(current, await detect(current))
