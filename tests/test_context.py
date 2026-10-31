@@ -144,3 +144,40 @@ def test_issue_weight_decay(monkeypatch):
     assert context.issue_weight("election", "2026-10-21", DAY) == 0.5
     assert context.issue_weight("election", "", DAY) == 1.0
     assert context.issue_weight("protest", "2026-10-01", DAY) == 1.0
+
+
+async def test_drops_undated_and_invented_issues(monkeypatch):
+    monkeypatch.setattr(context, "post_json", _news([]))
+
+    async def summary(content, schema, instruction):
+        def issue(title, started):
+            return {"title": title, "kind": "election", "category": "sensitive", "started": started}
+
+        def watch(issue_title):
+            return {"item": "x", "category": "location", "why": "y", "issue": issue_title}
+
+        return {
+            "watchlist": [watch("지방선거"), watch("범죄 지속"), watch("지어낸 날짜")],
+            "issues": [
+                issue("지방선거", "2026-10-20"),
+                issue("범죄 지속", ""),
+                issue("지어낸 날짜", "2026-10-01"),
+            ],
+            "note": "",
+        }
+
+    monkeypatch.setattr(context.vlm, "generate_json", summary)
+    result = await context.build_context("KR", DAY)
+    assert [i["title"] for i in result.issues] == ["지방선거"]
+    assert [w.get("issue") for w in result.watchlist if w["source"] == "context"] == ["지방선거"]
+
+
+def test_article_date_formats():
+    assert context._to_day("Wed, 03 Sep 2026 07:00:00 GMT") == "2026-09-03"
+    assert context._to_day("Fri, 31 Oct 2026 20:00:00 GMT") == "2026-11-01"  # 한국 시간
+    assert context._to_day("2026-10-20") == "2026-10-20"
+    assert context._to_day("") == context._to_day(None) == context._to_day("어제") == ""
+
+
+def test_prompt_excludes_detected_types():
+    assert "동·호수" in context._INSTRUCTION and "택배 송장" in context._INSTRUCTION
