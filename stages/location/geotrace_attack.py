@@ -268,7 +268,6 @@ async def attack(
     findings: list[dict[str, Any]],
     *,
     poi_results: list[PoiResult] | None = None,
-    geoclip_regions: str = "(none)",
     image_id: str = "img",
 ) -> tuple[Guess, list[PoiResult]]:
     """공격 1회. 반환: (추정, 이번에 쓴 지도 검색 결과 전체 — 근거 확인에 쓴다)."""
@@ -291,7 +290,6 @@ async def attack(
             prompts.PLAN.format(
                 clue_summary=clue_summary,
                 poi_results=clue_utils.summarize_poi(poi),
-                geoclip_regions=geoclip_regions,
                 budget=s.search_budget,
             ),
         )
@@ -306,7 +304,6 @@ async def attack(
             clue_raw_json=json.dumps(stage1.model_dump(), ensure_ascii=False),
             poi_results=clue_utils.summarize_poi(poi),
             search_results="\n".join(searched) or "(none)",
-            geoclip_regions=geoclip_regions,
             alt_threshold=s.alt_threshold,
         ),
     )

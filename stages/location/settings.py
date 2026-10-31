@@ -21,9 +21,6 @@ class LocationSettings(BaseSettings):
     # 공격자 B 는 "그냥 물어보기" 기준선이라 생각을 줄인다 (low: 약 7초, 기본: 약 40초)
     direct_thinking_level: str | None = "low"
 
-    geoclip_top_k: int = Field(default=5, ge=1, le=50)
-    geoclip_device: str = "auto"  # auto | cpu | cuda
-
 
 @lru_cache
 def get_location_settings() -> LocationSettings:
