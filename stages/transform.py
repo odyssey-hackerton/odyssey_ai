@@ -21,6 +21,8 @@ def _transform(media: Media, assessment: Assessment) -> Media:
             continue
         if finding.get("source") == "exif":
             continue  # PNG 재인코딩 시 메타데이터가 제거된다.
+        if finding.get("source") == "agent2":
+            continue  # ② 조합 정보는 자기 영역이 없다. 가릴 곳은 sources 의 ① 항목이다.
         if finding.get("source") == "text":
             spans = finding.get("spans")
             if not isinstance(spans, list) or not spans or text is None:

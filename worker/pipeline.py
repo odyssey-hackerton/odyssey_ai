@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from stages.detect import detect
-from stages.risk import analyze
+from stages.risk import analyze, enrich
 from stages.transform import transform
 from stages.types import Assessment, Media
 from worker.contract import JobStatus, UserChoice
@@ -54,7 +54,11 @@ async def run_detection_phase(
 ) -> DetectionResult:
     """Phase 1: 탐지·분석만 실행하고 결과를 반환한다. 변환은 하지 않는다."""
     await report(JobStatus.DETECTING, message="개인정보 탐지 중")
-    findings = initial_findings if initial_findings is not None else await detect(media)
+    # ② VLM 단계(enrich)는 원본이 필요하므로 원본을 지우기(on_detected) 전에 돌린다.
+    if initial_findings is not None:
+        findings = initial_findings
+    else:
+        findings = await enrich(media, await detect(media))
     if on_detected is not None:
         await on_detected(findings)
         media.image = None
@@ -82,7 +86,7 @@ async def run_pipeline(
         findings = initial_findings
     else:
         await report(JobStatus.DETECTING, message="개인정보 탐지 중")
-        findings = await detect(media)
+        findings = await enrich(media, await detect(media))
 
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
     before = await analyze(media, findings)
@@ -104,7 +108,7 @@ async def run_pipeline(
             media.image = None
 
         await report(JobStatus.VERIFYING, iteration=iterations, message="재검증 중")
-        after = await analyze(current, await detect(current))
+        after = await analyze(current, await enrich(current, await detect(current)))
 
         # 사용자가 남겨둔 단서를 자동 반복으로 다시 덮어쓰지 않는다.
         if user_choices is not None:

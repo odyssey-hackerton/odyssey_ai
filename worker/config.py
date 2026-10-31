@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     paddle_device: str = "cpu"  # "cpu" | "gpu:0"
     paddle_mkldnn: bool = False  # CPU oneDNN 가속. std::exception 이 나면 False 유지
 
+    # ② 위험 분석 VLM (bbox 조각 추출 + 조합). False 면 VLM 없이 ① 결과로만 점수를 매긴다.
+    risk_use_vlm: bool = True
+
     # 일반 서버의 Redis (사설 IP). 예: redis://:비밀번호@10.1.1.27:6379/0
     redis_url: str = "redis://localhost:6379/0"
 
