@@ -125,6 +125,7 @@ KIND_DPC: dict[str, int] = {
 # VLM 호출 수 상한 (Gemini 무료 한도). 점수 기준이 아니라 비용 제한이다.
 MAX_CROPS = 12
 CONCURRENCY = 4
+MIN_CROP_SIDE = 384  # 조각 확대 목표 (픽셀)
 
 
 # ---------------------------------------------------------------- VLM 스키마
@@ -188,7 +189,15 @@ def _crop(image: Image.Image, bbox: list[float]) -> Image.Image | None:
     box = (int(x1), int(y1), min(image.width, int(x2 + 0.999)), min(image.height, int(y2 + 0.999)))
     if box[2] - box[0] < 2 or box[3] - box[1] < 2:
         return None
-    return image.crop(box)
+    crop = image.crop(box)
+    # 작은 조각(간판 50px 등)은 VLM 이 흐릿하다고 판단한다. 짧은 변을 MIN_CROP_SIDE 로 키운다.
+    short = min(crop.size)
+    if short < MIN_CROP_SIDE:
+        scale = MIN_CROP_SIDE / short
+        crop = crop.resize(
+            (round(crop.width * scale), round(crop.height * scale)), Image.Resampling.LANCZOS
+        )
+    return crop
 
 
 async def _validate(model: type[BaseModel], content, instruction: str) -> BaseModel:

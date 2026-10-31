@@ -119,3 +119,10 @@ async def test_risk_provider_can_differ_from_detection(monkeypatch):
     monkeypatch.setattr(gemini, "generate_json", AsyncMock(side_effect=AssertionError))
     monkeypatch.setattr(qwen, "generate_json", AsyncMock(return_value={"p": "q"}))
     assert (await vlm.generate_json([], {}, "i", provider="qwen"))["p"] == "q"
+
+
+def test_small_crop_is_upscaled():
+    from stages.risk import MIN_CROP_SIDE, _crop
+
+    crop = _crop(Image.new("RGB", (200, 200)), [10, 10, 60, 46])
+    assert min(crop.size) == MIN_CROP_SIDE and crop.width > crop.height
