@@ -65,8 +65,11 @@ def job(input_type, object_key=None, text=None) -> JobMessage:
     ("input_type", "has_image", "text"),
     [("image", True, None), ("text", False, "010-1234-5678"), ("image_text", True, "본문")],
 )
-async def test_passthrough_returns_both_outputs(input_type, has_image, text):
-    """AI가 없어도 입력 종류별로 계약에 맞는 결과를 돌려준다."""
+async def test_detection_waits_for_user(input_type, has_image, text, monkeypatch):
+    """각 입력은 탐지 결과를 먼저 반환하고 사용자 선택을 기다린다."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("worker.pipeline.detect", AsyncMock(return_value=[]))
     storage, redis = FakeStorage(), FakeRedis()
     key = None
     if has_image:
@@ -76,13 +79,8 @@ async def test_passthrough_returns_both_outputs(input_type, has_image, text):
 
     result = await process(redis, storage, Settings(), msg)
 
-    assert isinstance(result, ResultMessage) and result.status == "DONE"
-    assert result.result_text == text
-    if has_image:
-        assert result.result_object_key == f"results/{msg.job_id}.png"
-        assert storage.objects[result.result_object_key] == b"png-bytes"
-    else:
-        assert result.result_object_key is None
+    assert isinstance(result, ResultMessage) and result.status == "AWAITING_USER"
+    assert result.result_text is None and result.result_object_key is None
     statuses = [p["status"] for p in redis.progress[f"job:{msg.job_id}"]]
     assert statuses == [JobStatus.DETECTING, JobStatus.ANALYZING]
 
@@ -126,6 +124,10 @@ async def test_pipeline_stops_at_max_iterations(monkeypatch):
     async def always_risky(media, findings):
         return Assessment(risky=True, risk=0.9)
 
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(p, "detect", AsyncMock(return_value=[]))
+    monkeypatch.setattr(p, "transform", AsyncMock(return_value=Media(text="x")))
     monkeypatch.setattr(p, "analyze", always_risky)
 
     async def report(*a, **k):

@@ -1,5 +1,5 @@
 # odyssey-ai: GPU 서버에서 도는 AI 워커.
-# 지금은 모델이 없어 python:3.12-slim 으로 충분하다.
+# Gemini API와 Pillow 편집은 GPU 없이 python:3.12-slim에서 동작한다.
 # PaddleOCR 등 GPU 모델을 넣을 때 CUDA 베이스 이미지로 바꾸고 `docker run --gpus all` 로 실행한다.
 FROM python:3.12-slim
 

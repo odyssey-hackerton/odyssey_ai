@@ -1,6 +1,7 @@
 import socket
 from functools import lru_cache
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +11,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     log_level: str = "INFO"
+
+    # 테스트용 무료 Gemini 프로젝트 키. 유료 모델/폴백은 자동 호출하지 않는다.
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str = "gemini-3.8-flash"
+    gemini_timeout_seconds: int = Field(default=90, ge=1, le=300)
 
     # 일반 서버의 Redis (사설 IP). 예: redis://:비밀번호@10.1.1.27:6379/0
     redis_url: str = "redis://localhost:6379/0"

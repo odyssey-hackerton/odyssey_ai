@@ -2,7 +2,9 @@
 
 GPU 서버에서 도는 AI 워커입니다. 일반 서버의 Redis에서 작업을 가져와 ① 탐지 → ② 위험 분석 → ③ 변환 → ② 재검증(최대 3회)을 거쳐 결과를 돌려보냅니다. 협업 규칙은 [CONTRIBUTING.md](CONTRIBUTING.md)를 보세요.
 
-지금은 AI 모델이 없어서 **아무것도 찾지 않고 사진·글을 그대로 돌려줍니다**. 큐 연결, 진행 상태, S3, 결과 전송은 실제와 똑같이 동작하므로 AI 팀은 `stages/`만 채우면 됩니다.
+합성 자료 테스트용으로 **Gemini 사진·본문 탐지와 재검증**을 연결했습니다. 최초 분석은 `AWAITING_USER`로 반환하고, 사용자가 선택하면 서버에서 실제 픽셀 가림·블러·본문 삭제 후 한 번 재검증합니다. 남은 단서는 사용자에게 보여줍니다. 생성형 지우기·간판 교체는 미구현이며 사진 `remove`는 단색 가림입니다.
+
+무료 프로젝트의 `GEMINI_API_KEY`가 필요합니다. 키가 없거나 호출이 실패하면 작업은 FAILED가 됩니다. 기존 LiteLLM 유료 폴백을 거치지 않습니다. 무료 입력은 Google의 제품 개선에 사용될 수 있으므로 실제 개인정보를 제출하지 마세요. [무료 API 구동 안내](../odyssey_backend/docs/free-api-flow.md)를 먼저 확인하세요.
 
 ```
 일반 서버 (10.1.1.27)                           GPU 서버
@@ -12,7 +14,7 @@ API ◀──────── Redis results ◀──XADD──── worker.m
               S3 originals/ ──▶ 원본 사진 / 결과 사진 ──▶ S3 results/
 ```
 
-GPU 서버는 Redis(일반 서버 사설 IP, 6379)와 S3에만 접속합니다. Postgres에는 접속하지 않고, 들어오는 포트도 열 필요가 없습니다.
+워커는 Redis(일반 서버 사설 IP, 6379), S3와 Gemini HTTPS API에 접속합니다. 이 구성에는 GPU가 필요하지 않습니다. Postgres에는 접속하지 않고, 들어오는 포트도 열 필요가 없습니다.
 
 ## 폴더 구조
 
@@ -41,7 +43,7 @@ worker/
 
 ## AI 넣는 방법
 
-1. `stages/detect.py`, `risk.py`, `transform.py`의 `TODO(AI)` 부분을 채웁니다. 함수의 입력·출력 형식만 지키면 내부는 자유입니다.
+1. `stages/detect.py`의 Gemini 탐지, `risk.py`의 위험 등급 집계, `transform.py`의 실제 가림을 사용합니다. 자체 모델로 교체할 때 함수 입출력과 오류 처리를 유지하세요.
 2. 탐지 항목(`findings`)은 `type`, `source`, `bbox`, `score`, `action` 키를 쓰고, 필요하면 다른 키를 더 넣어도 됩니다. 백엔드가 그대로 저장해서 리포트에 보여줍니다.
 3. 모델 라이브러리를 추가했으면 `uv add <패키지>`로 `pyproject.toml`과 `uv.lock`을 함께 갱신합니다.
 4. GPU를 쓰게 되면 `Dockerfile`의 베이스 이미지를 CUDA 이미지로 바꾸고, 실행할 때 `--gpus all`을 붙입니다.
@@ -88,7 +90,7 @@ unset RP
 docker logs -f odyssey-worker
 ```
 
-사진 작업까지 처리하려면 워커용 AWS 키를 함께 넣습니다 (`-e AWS_ACCESS_KEY_ID=... -e AWS_SECRET_ACCESS_KEY=...`, 권한은 `originals/*` 읽기와 `results/*` 쓰기).
+Gemini 호출에는 무료 프로젝트의 `GEMINI_API_KEY`도 환경변수로 넣습니다. 사진 작업까지 처리하려면 워커용 AWS 키를 함께 넣습니다 (`-e AWS_ACCESS_KEY_ID=... -e AWS_SECRET_ACCESS_KEY=...`, 권한은 `originals/*` 읽기와 `results/*` 쓰기).
 
 ### 4. 업데이트·확인
 
