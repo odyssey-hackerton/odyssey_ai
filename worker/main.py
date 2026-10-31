@@ -8,6 +8,7 @@
 
 import asyncio
 import contextlib
+import json
 import logging
 import signal
 from pathlib import PurePosixPath
@@ -27,7 +28,6 @@ from worker.storage import Storage, result_key
 
 logger = logging.getLogger("worker")
 
-CONTENT_TYPES = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
 CLAIM_CHECK_SECONDS = 60
 RETRY_SECONDS = 5
 
@@ -37,10 +37,33 @@ async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
         await asyncio.wait_for(stop.wait(), seconds)
 
 
+class OriginalCleanupError(RuntimeError):
+    """Keep the job pending until S3 confirms that the original is gone."""
+
+
+def execution_key(msg: JobMessage) -> str:
+    return f"execution:{msg.execution_id}"
+
+
+def edited_key(msg: JobMessage) -> str:
+    return f"originals/{msg.job_id}/{msg.execution_id}-edited.png"
+
+
+async def discard_original(storage: Storage, key: str | None) -> None:
+    if key:
+        try:
+            await storage.delete(key)
+        except Exception:
+            raise OriginalCleanupError("temporary image cleanup must be retried") from None
+
+
 async def process(
     redis: Redis, storage: Storage, settings: Settings, msg: JobMessage
 ) -> ResultMessage:
     job_id = str(msg.job_id)
+    checkpoint_key = f"{execution_key(msg)}:checkpoint"
+    saved = await redis.get(checkpoint_key)
+    checkpoint = json.loads(saved) if saved else None
 
     async def report(status: JobStatus, iteration: int = 0, message: str | None = None) -> None:
         await set_progress(
@@ -53,68 +76,105 @@ async def process(
         )
 
     media = Media(text=msg.text)
-    if msg.object_key:
-        media.image = await storage.get(msg.object_key)
-        media.image_ext = PurePosixPath(msg.object_key).suffix.lstrip(".").lower() or "jpg"
+    try:
+        if msg.object_key and checkpoint is None:
+            media.image = await storage.get(msg.object_key)
+            media.image_ext = PurePosixPath(msg.object_key).suffix.lstrip(".").lower()
 
-    if msg.user_choices is None:
-        # Phase 1: 탐지·분석만 실행 → 사용자 선택 대기
-        detection = await run_detection_phase(media, report=report)
+        if msg.user_choices is None:
+
+            async def detected(findings):
+                # 원본 삭제 전에 복구에 필요한 탐지 결과만 저장한다.
+                await redis.setex(
+                    checkpoint_key,
+                    settings.progress_ttl_seconds,
+                    json.dumps({"stage": "detected", "findings": findings}),
+                )
+                await discard_original(storage, msg.object_key)
+
+            detection = await run_detection_phase(
+                media,
+                report=report,
+                on_detected=detected,
+                initial_findings=checkpoint["findings"] if checkpoint else None,
+            )
+            return ResultMessage(
+                job_id=msg.job_id,
+                execution_id=msg.execution_id,
+                status="AWAITING_USER",
+                risk_detected=detection.before.risky,
+                risk_before=detection.before.risk,
+                findings=detection.before.findings,
+                details={"worker": settings.worker_name},
+            )
+
+        async def transformed(output: Media):
+            nonlocal checkpoint
+            if checkpoint is None:
+                if output.image is not None:
+                    await storage.put(edited_key(msg), output.image, "image/png")
+                checkpoint = {
+                    "stage": "edited",
+                    "text": output.text,
+                    "has_image": output.image is not None,
+                }
+                await redis.setex(
+                    checkpoint_key, settings.progress_ttl_seconds, json.dumps(checkpoint)
+                )
+            await discard_original(storage, msg.object_key)
+
+        resume_output = None
+        if checkpoint:
+            resume_output = Media(
+                image=await storage.get(edited_key(msg)) if checkpoint["has_image"] else None,
+                image_ext="png" if checkpoint["has_image"] else None,
+                text=checkpoint["text"],
+            )
+        result = await run_pipeline(
+            media,
+            max_iterations=msg.options.max_iterations,
+            report=report,
+            user_choices=msg.user_choices,
+            initial_findings=(
+                [f.model_dump(exclude_none=True) for f in msg.initial_findings]
+                if msg.initial_findings is not None
+                else None
+            ),
+            resume_output=resume_output,
+            on_transformed=transformed,
+        )
+        out = result.output
+        out_key = None
+        if out.image is not None:
+            out_key = result_key(f"{job_id}/{msg.execution_id}", "png")
+            await storage.put(out_key, out.image, "image/png")
         return ResultMessage(
             job_id=msg.job_id,
-            status="AWAITING_USER",
-            risk_detected=detection.before.risky,
-            risk_before=detection.before.risk,
-            findings=detection.before.findings,
-            details={"worker": settings.worker_name},
+            execution_id=msg.execution_id,
+            status="DONE",
+            risk_detected=result.before.risky,
+            risk_before=result.before.risk,
+            risk_after=result.after.risk,
+            iterations=result.iterations,
+            result_object_key=out_key,
+            result_text=out.text,
+            findings=result.after.findings,
+            details={
+                "worker": settings.worker_name,
+                "model": settings.gemini_model,
+                "processed_findings": result.before.findings,
+                "remaining_risk": result.after.risky,
+            },
         )
-
-    # Phase 2: 사용자 선택 반영 후 변환·검증 실행
-    result = await run_pipeline(
-        media,
-        max_iterations=msg.options.max_iterations,
-        report=report,
-        user_choices=msg.user_choices,
-        initial_findings=(
-            [f.model_dump(exclude_none=True) for f in msg.initial_findings]
-            if msg.initial_findings is not None
-            else None
-        ),
-    )
-
-    out = result.output
-    out_key = None
-    if out.image is not None:
-        ext = out.image_ext or "jpg"
-        out_key = result_key(job_id, ext)
-        await storage.put(out_key, out.image, CONTENT_TYPES.get(ext, "application/octet-stream"))
-
-    return ResultMessage(
-        job_id=msg.job_id,
-        status="DONE",
-        risk_detected=result.before.risky,
-        risk_before=result.before.risk,
-        risk_after=result.after.risk,
-        iterations=result.iterations,
-        result_object_key=out_key,
-        result_text=out.text,
-        findings=result.after.findings,
-        details={
-            "worker": settings.worker_name,
-            "model": settings.gemini_model,
-            "processed_findings": result.before.findings,
-            "remaining_risk": result.after.risky,
-        },
-    )
+    finally:
+        media.image = None
+        await discard_original(storage, msg.object_key)
 
 
 async def handle(
     redis: Redis, storage: Storage, settings: Settings, msg_id: str, fields: dict[str, str]
 ) -> None:
-    """메시지 하나를 처리한다.
-
-    실패해도 FAILED 결과를 보내고 ack 해서 같은 작업이 무한 반복되지 않게 한다.
-    """
+    """Persist the outcome before publishing; retries never repeat a completed edit."""
     try:
         msg = JobMessage.model_validate_json(fields.get("payload", ""))
     except ValidationError:
@@ -122,16 +182,58 @@ async def handle(
         await redis.xack(settings.jobs_stream, settings.worker_group, msg_id)
         return
 
-    logger.info("job %s received (%s)", msg.job_id, msg.input_type)
-    try:
-        result = await process(redis, storage, settings, msg)
-    except Exception as e:
-        logger.exception("job %s failed", msg.job_id)
-        result = ResultMessage(job_id=msg.job_id, status="FAILED", error=type(e).__name__)
+    key = execution_key(msg)
+    lock = redis.lock(f"{key}:lock", timeout=settings.claim_idle_seconds, blocking=False)
+    if not await lock.acquire():
+        return  # 다른 워커가 처리 중이다. ack하지 않고 결과를 기다린다.
 
-    await send_result(redis, settings.results_stream, result, settings.stream_maxlen)
-    await redis.xack(settings.jobs_stream, settings.worker_group, msg_id)
-    logger.info("job %s -> %s", msg.job_id, result.status)
+    owner = asyncio.current_task()
+
+    async def renew_lock():
+        try:
+            while True:
+                await asyncio.sleep(max(1, settings.claim_idle_seconds / 3))
+                await lock.extend(settings.claim_idle_seconds, replace_ttl=True)
+        except Exception:
+            owner.cancel()  # 잠금을 잃은 워커는 결과를 쓰거나 ack하지 않는다.
+            raise
+
+    renewal = asyncio.create_task(renew_lock())
+    try:
+        cached = await redis.get(f"{key}:result")
+        if cached:
+            result = ResultMessage.model_validate_json(cached)
+        else:
+            try:
+                result = await process(redis, storage, settings, msg)
+            except (OriginalCleanupError, RedisConnectionError, RedisTimeoutError):
+                raise
+            except Exception as error:
+                logger.warning("job %s failed (%s)", msg.job_id, type(error).__name__)
+                result = ResultMessage(
+                    job_id=msg.job_id,
+                    execution_id=msg.execution_id,
+                    status="FAILED",
+                    error="처리하지 못했습니다. 원본 파일을 다시 업로드해 주세요",
+                )
+            await redis.setex(
+                f"{key}:result", settings.progress_ttl_seconds, result.model_dump_json()
+            )
+
+        # 실패·타임아웃·결과 전송 재시도에서도 원본과 임시 편집본을 정리한다.
+        await discard_original(storage, msg.object_key)
+        if msg.object_key and msg.user_choices is not None:
+            await discard_original(storage, edited_key(msg))
+        await send_result(redis, settings.results_stream, result, settings.stream_maxlen)
+        await redis.xack(settings.jobs_stream, settings.worker_group, msg_id)
+        await redis.delete(f"{key}:checkpoint")
+        logger.info("job %s -> %s", msg.job_id, result.status)
+    finally:
+        renewal.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await renewal
+        with contextlib.suppress(Exception):
+            await lock.release()
 
 
 async def claim_stale(redis: Redis, storage: Storage, settings: Settings) -> None:
@@ -207,6 +309,11 @@ async def run() -> None:
                 raise
             # Redis 데이터가 초기화되어 그룹이 사라진 경우
             await ensure_group(redis, settings.jobs_stream, settings.worker_group)
+        except Exception as error:
+            logger.warning(
+                "worker operation failed (%s), pending job will retry", type(error).__name__
+            )
+            await _sleep_or_stop(stop, RETRY_SECONDS)
 
     logger.info("worker %s stopped", settings.worker_name)
     await redis.aclose()

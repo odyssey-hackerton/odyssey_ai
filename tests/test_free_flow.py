@@ -192,3 +192,23 @@ async def test_removing_entire_caption_finishes_without_provider():
         user_choices=[UserChoice(idx=0, action="remove")],
     )
     assert result.output.text == "" and not result.after.risky
+
+
+@pytest.mark.parametrize("format", ["PNG", "WEBP"])
+async def test_transparent_rgb_never_becomes_visible(format):
+    image = Image.new("RGBA", (20, 20), (255, 0, 0, 0))
+    image.putpixel((0, 0), (0, 0, 0, 255))
+    raw = BytesIO()
+    image.save(raw, format=format, lossless=True)
+    decoded = open_image(raw.getvalue())
+    assert decoded.getpixel((5, 5)) == (255, 255, 255)
+    assert decoded.getpixel((0, 0)) == (0, 0, 0)
+    result = await transform(
+        Media(image=raw.getvalue(), text="secret"),
+        Assessment(
+            risky=True,
+            risk=0.9,
+            findings=[{"source": "text", "spans": [[0, 6]], "action": "remove"}],
+        ),
+    )
+    assert open_image(result.image).getpixel((5, 5)) == (255, 255, 255)

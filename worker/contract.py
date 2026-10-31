@@ -1,4 +1,4 @@
-"""API-워커 큐 메시지 계약 v1.
+"""API-워커 큐 메시지 계약 v2.
 
 odyssey_backend 의 app/schemas/contract.py 와 같은 내용이어야 한다. 바꿀 때는 두 레포를 함께 고친다.
 
@@ -25,7 +25,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class JobStatus(StrEnum):
@@ -48,7 +48,7 @@ class ContractModel(BaseModel):
 
 
 class JobOptions(ContractModel):
-    max_iterations: int = 3
+    max_iterations: int = Field(default=3, ge=1, le=3)
 
 
 InputType = Literal["image", "text", "image_text"]
@@ -76,8 +76,9 @@ class Finding(BaseModel):
 class JobMessage(ContractModel):
     """jobs stream (API → 워커)"""
 
-    schema_version: int = SCHEMA_VERSION
+    schema_version: Literal[2] = SCHEMA_VERSION
     job_id: UUID
+    execution_id: UUID
     input_type: InputType
     object_key: str | None = None  # 원본 이미지 S3 키 (image, image_text)
     text: str | None = None  # 원본 글 (text, image_text). Postgres에는 저장하지 않는다.
@@ -93,8 +94,9 @@ class JobMessage(ContractModel):
 class ResultMessage(ContractModel):
     """results stream (워커 → API)"""
 
-    schema_version: int = SCHEMA_VERSION
+    schema_version: Literal[2] = SCHEMA_VERSION
     job_id: UUID
+    execution_id: UUID
     status: Literal["DONE", "FAILED", "AWAITING_USER"]
     risk_detected: bool | None = None
     risk_before: float | None = None
