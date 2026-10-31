@@ -114,8 +114,19 @@ def attack_image(image_bytes: bytes) -> dict[str, str]:
     }
 
 
-async def _ask(model: type[BaseModel], content: list[dict[str, Any]], instruction: str):
-    raw = await generate_json(content, model.model_json_schema(), instruction)
+async def _ask(
+    model: type[BaseModel],
+    content: list[dict[str, Any]],
+    instruction: str,
+    thinking_level: str | None = None,
+):
+    raw = await generate_json(
+        content,
+        model.model_json_schema(),
+        instruction,
+        max_output_tokens=get_location_settings().attack_max_output_tokens,
+        thinking_level=thinking_level,
+    )
     try:
         return model.model_validate(raw)
     except ValidationError:

@@ -144,7 +144,8 @@ STAGE2 = {
 def fake_apis(monkeypatch):
     calls = {"prompts": [], "kakao": [], "web": []}
 
-    async def fake_generate(content, schema, instruction):
+    async def fake_generate(content, schema, instruction, **kw):
+        assert kw["max_output_tokens"] >= 8192  # 생각 토큰 때문에 4096 이면 잘린다
         calls["prompts"].append(instruction)
         return {"Stage1": STAGE1, "Plan": PLAN, "Stage2": STAGE2}[schema["title"]]
 
@@ -215,7 +216,8 @@ DIRECT = {
 async def test_direct_attack_returns_same_guess_shape(monkeypatch):
     calls = []
 
-    async def fake_generate(content, schema, instruction):
+    async def fake_generate(content, schema, instruction, **kw):
+        assert kw["thinking_level"] == "low"
         calls.append(instruction)
         assert schema["title"] == "Direct"
         return DIRECT

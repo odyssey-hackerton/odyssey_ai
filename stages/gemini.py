@@ -44,8 +44,17 @@ def _request(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 async def generate_json(
-    content: list[dict[str, Any]], schema: dict[str, Any], instruction: str
+    content: list[dict[str, Any]],
+    schema: dict[str, Any],
+    instruction: str,
+    *,
+    max_output_tokens: int = 4096,
+    thinking_level: str | None = None,
 ) -> dict[str, Any]:
+    """max_output_tokens 는 생각(thinking) 토큰까지 포함한다. 생각이 길면 답이 잘려 incomplete 가 된다."""
+    generation_config: dict[str, Any] = {"temperature": 0.1, "max_output_tokens": max_output_tokens}
+    if thinking_level:
+        generation_config["thinking_level"] = thinking_level  # low | medium | high
     result = await asyncio.to_thread(
         _request,
         {
@@ -53,12 +62,14 @@ async def generate_json(
             "input": content,
             "system_instruction": instruction,
             "response_format": {"type": "text", "mime_type": "application/json", "schema": schema},
-            "generation_config": {"temperature": 0.1, "max_output_tokens": 4096},
+            "generation_config": generation_config,
             "store": False,
         },
     )
     if result.get("status") != "completed":
-        raise AIServiceError("Gemini analysis was blocked or did not complete")
+        # 상태값만 남긴다 (incomplete = 토큰 한도, 그 외 = 차단 등). 원문은 넣지 않는다.
+        status = str(result.get("status"))[:20]
+        raise AIServiceError(f"Gemini analysis was blocked or did not complete (status={status})")
     # Interactions API의 최종 텍스트만 사용한다. 생각/도구 출력은 결과가 아니다.
     try:
         text = "".join(

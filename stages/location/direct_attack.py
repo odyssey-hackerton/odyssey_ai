@@ -22,6 +22,7 @@ from stages.location.geotrace_attack import (
     label_clues,
 )
 from stages.location.schema import RADIUS_KM, Guess, map_paper_level
+from stages.location.settings import get_location_settings
 from worker.config import get_settings
 
 NAME = "llm_direct"
@@ -64,6 +65,7 @@ async def attack(
         Direct,
         [image],
         prompts.DIRECT.format(entities_summary=clue_utils.summarize_entities(findings)),
+        thinking_level=get_location_settings().direct_thinking_level,
     )
     size = await asyncio.to_thread(image_size, image_bytes)
     return to_guess(answer, image_id, size)
