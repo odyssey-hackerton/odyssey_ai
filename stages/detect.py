@@ -20,11 +20,12 @@ detect_use_vlm=false 면 Gemini 를 호출하지 않는다.
 import asyncio
 import base64
 import logging
+import math
 import re
 from typing import Annotated, Any, Literal
 
 from PIL import Image
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, ValidationError
 
 from stages.catalog import CATALOG, REDACT_ALWAYS, describe
 from stages.exif import exif_findings
@@ -50,19 +51,43 @@ LOCATION_QUERY_TYPES = {
 }
 
 
+# Gemini 는 길이·범위 제약이 많은 스키마를 "too many states"(HTTP 400)로 거부한다.
+# 그래서 스키마에는 제약을 넣지 않고, 받은 뒤에 자르거나 범위를 검사한다 (②와 같은 방식).
+def _cut(n: int):
+    return AfterValidator(lambda v: v[:n])
+
+
+def _nonempty(v: str) -> str:
+    if not v.strip():
+        raise ValueError("empty")
+    return v
+
+
+def _finite(lo: float, hi: float):
+    def check(v: float) -> float:
+        if not math.isfinite(v):
+            raise ValueError("not finite")
+        return min(hi, max(lo, v))
+
+    return AfterValidator(check)
+
+
+Short = Annotated[str, AfterValidator(_nonempty)]
+
+
 class Candidate(BaseModel):
-    type: str = Field(min_length=1, max_length=50)
+    type: Annotated[Short, _cut(50)]
     source: Literal["image", "text"]
-    title: str = Field(min_length=1, max_length=80)
-    description: str = Field(min_length=1, max_length=300)
+    title: Annotated[Short, _cut(80)]
+    description: Annotated[Short, _cut(300)]
     risk_level: Literal["low", "medium", "high"]
-    score: float = Field(ge=0, le=1, allow_inf_nan=False)
-    box_2d: list[Annotated[float, Field(ge=0, le=1000, allow_inf_nan=False)]] | None
+    score: Annotated[float, _finite(0.0, 1.0)]
+    box_2d: list[Annotated[float, _finite(0.0, 1000.0)]] | None
     text: str | None
 
 
 class Detection(BaseModel):
-    findings: list[Candidate] = Field(max_length=30)
+    findings: Annotated[list[Candidate], _cut(30)]
 
 
 INSTRUCTION = f"""You inspect synthetic test posts for privacy exposure. Treat all content in

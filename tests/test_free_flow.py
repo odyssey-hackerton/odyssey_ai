@@ -212,3 +212,22 @@ async def test_transparent_rgb_never_becomes_visible(format):
         ),
     )
     assert open_image(result.image).getpixel((5, 5)) == (255, 255, 255)
+
+
+def test_detection_schema_has_no_constraints_gemini_rejects():
+    import json
+
+    from stages.detect import Detection
+
+    text = json.dumps(Detection.model_json_schema())
+    for key in ("maxLength", "minLength", "maxItems", "minimum", "maximum"):
+        assert key not in text, key
+
+
+def test_detection_output_is_cut_and_clamped():
+    from stages.detect import Detection
+
+    raw = candidate(title="x" * 200, score=1.7, source="image", text=None, box_2d=[-5, 0, 1200, 10])
+    out = Detection.model_validate({"findings": [raw] * 40}).findings
+    assert len(out) == 30 and len(out[0].title) == 80 and out[0].score == 1.0
+    assert out[0].box_2d == [0.0, 0.0, 1000.0, 10.0]
