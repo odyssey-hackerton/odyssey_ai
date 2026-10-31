@@ -48,6 +48,29 @@ worker/
 3. 모델 라이브러리를 추가했으면 `uv add <패키지>`로 `pyproject.toml`과 `uv.lock`을 함께 갱신합니다.
 4. GPU를 쓰게 되면 `Dockerfile`의 베이스 이미지를 CUDA 이미지로 바꾸고, 실행할 때 `--gpus all`을 붙입니다.
 
+## ① 탐지 모델 (에이전트1)
+
+`stages/detect.py`는 Gemini(VLM) 외에 로컬 모델 세 가지를 함께 쓴다. 모델이 없으면 그 모듈만 건너뛴다.
+
+| 모듈 | 기술 | 준비 |
+|---|---|---|
+| OCR | PaddleOCR PP-OCRv5 korean | `uv sync` 로 설치, 모델은 아래 스크립트가 캐시 |
+| PII | Veil-PII-Ko-Lite(ONNX INT8) + ko-pii(체크섬) + 정규식 | `models/veil/` 에 다운로드 |
+| EXIF | Pillow | 없음 |
+| VLM | Gemini (`GEMINI_API_KEY`) | 기본 경로. 객체·장면·글자까지 읽는다. `DETECT_USE_VLM=false` 면 호출 안 함 |
+
+VLM 은 `VLM_PROVIDER` 로 바꾼다: `gemini`(기본, 무료 키) 또는 `qwen`(GPU 서버에서 `vllm serve Qwen/Qwen3-VL-8B-Instruct --port 8001` 로 띄운 로컬 모델, `stages/qwen.py`). 프롬프트·JSON 스키마는 공통이라 `detect.py` 는 바뀌지 않는다.
+
+기본값은 **Gemini + 텍스트 PII + EXIF** 다. PaddleOCR 은 `DETECT_USE_OCR=true` 일 때만 돌며,
+CPU 빌드에서 `RuntimeError: std::exception` 이 나면 `PADDLE_MKLDNN=false`(기본) 또는 GPU 빌드를 쓴다.
+
+```bash
+uv sync
+uv run bash scripts/download-models.sh   # Veil 다운로드(~150MB) + PP-OCRv5 korean 캐시
+```
+
+GPU 서버에서 OCR 을 GPU 로 돌리려면 `uv pip install paddlepaddle-gpu==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/` 후 `PADDLE_DEVICE=gpu:0`. CPU 로도 사진 1장 1초 안팎이라 데모에는 CPU 로 충분하다.
+
 ## 로컬 개발
 
 ```bash

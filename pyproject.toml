@@ -9,6 +9,15 @@ dependencies = [
     "redis>=5.2",
     "boto3>=1.35",
     "pillow>=11.0",
+    # ① 탐지 로컬 모델. paddlepaddle CPU 휠은 PyPI 에 있다.
+    # GPU 서버: uv pip install paddlepaddle-gpu==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+    "paddlepaddle==3.0.0",
+    "paddleocr>=3.1",
+    "numpy>=1.26",
+    "onnxruntime>=1.18",
+    "transformers>=4.44",
+    "huggingface-hub[cli]>=0.25",
+    "ko-pii>=1.16",
 ]
 
 [dependency-groups]
@@ -23,6 +32,7 @@ geo = [
 
 [tool.uv]
 package = false
+
 
 [tool.ruff]
 line-length = 100
