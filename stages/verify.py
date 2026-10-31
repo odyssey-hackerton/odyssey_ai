@@ -13,6 +13,8 @@
 - remaining : 같은 자리에서 다시 나왔고 ② 등급이 medium 이상 → 경고
 - kept      : 사용자가 skip (그대로 둠)
 new_items: 처리 전 객체와 짝이 없고 medium 이상인 재검증 객체 (처음엔 못 찾은 단서)
+
+message: 화면에 그대로 띄울 한 문장. 모델 호출 없이 상태·처리·② reason 으로 만든다.
 """
 
 from typing import Any
@@ -33,6 +35,36 @@ def _same(before: dict[str, Any], after: dict[str, Any]) -> bool:
     if before.get("bbox") and after.get("bbox"):
         return risk.iou(before["bbox"], after["bbox"]) >= risk.IOU_MATCH
     return not before.get("bbox") and not after.get("bbox")
+
+
+ACTION_LABELS = {**risk.EDIT_LABELS, "skip": "그대로 두기"}
+
+
+def _name(f: dict[str, Any]) -> str:
+    return f.get("title") or f.get("type") or "항목"
+
+
+def _sentence(text: str) -> str:
+    text = text.strip()
+    return text if not text or text.endswith((".", "!", "?")) else text + "."
+
+
+def _message(item: dict[str, Any]) -> str:
+    name, done = _name(item), ACTION_LABELS.get(item["action"], item["action"])
+    reason = _sentence(item.get("after", {}).get("reason", ""))
+    if item["status"] == "removed":
+        return f"{name}: {done} 처리했고, 다시 확인했을 때 더 이상 보이지 않아요."
+    if item["status"] == "weakened":
+        return f"{name}: {done} 처리했어요. 흔적은 남았지만 알아낼 수 있는 정보는 거의 없어요."
+    if item["status"] == "remaining":
+        more = ACTION_LABELS.get(item.get("recommend", ""), "")
+        tail = f" {more}로 다시 처리하는 걸 추천해요." if more else ""
+        return f"{name}: {done} 처리했지만 아직 알아볼 수 있어요. {reason}{tail}".strip()
+    return f"{name}: 그대로 두기로 한 정보예요. {reason}".strip()
+
+
+def _new_message(a: dict[str, Any]) -> str:
+    return f"처음엔 못 찾은 정보예요. {_name(a)}: {_sentence(a.get('reason', ''))}".strip()
 
 
 def _base(f: dict[str, Any]) -> dict[str, Any]:
@@ -66,10 +98,11 @@ def compare(before: Findings, after: Findings) -> dict[str, Any]:
             item["status"] = "remaining"
             if action in STRONGER:
                 item["recommend"] = STRONGER[action]
+        item["message"] = _message(item)
         items.append(item)
 
     new_items = [
-        {**_base(a), **_after_info(a)}
+        {**_base(a), **_after_info(a), "message": _new_message(a)}
         for i, a in enumerate(after)
         if i not in matched and a.get("risk_level", "medium") != "low"
     ]

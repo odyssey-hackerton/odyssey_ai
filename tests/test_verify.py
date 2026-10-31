@@ -36,6 +36,13 @@ def test_compare_statuses():
     }
     f0 = result["items"][0]
     assert f0["recommend"] == "mask" and f0["after"]["reason"] == "윤곽이 보임"
+    assert f0["message"] == (
+        "얼굴: 블러 처리했지만 아직 알아볼 수 있어요. "
+        "윤곽이 보임. 덮기로 다시 처리하는 걸 추천해요."
+    )
+    assert "더 이상 보이지 않아요" in result["items"][1]["message"]
+    assert result["items"][2]["message"].startswith("face: 그대로 두기로 한 정보예요.")
+    assert result["new_items"][0]["message"] == "처음엔 못 찾은 정보예요. other: 야간 외식."
     assert [n["entity_id"] for n in result["new_items"]] == ["f6"]
     assert (result["remaining"], result["new"], result["clean"]) == (1, 1, False)
 
