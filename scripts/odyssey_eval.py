@@ -195,15 +195,46 @@ async def run_context(country, day, runs):
     return out
 
 
-async def run_image(name, g, media, context, runs):
+async def run_verify(media, findings):
+    """④: ② 추천 처리 그대로 ③ → ④ 1회 (scripts/make_output.py 와 같은 흐름)."""
+    from worker.contract import UserChoice
+    from worker.pipeline import run_pipeline
+
+    async def quiet(*_a, **_k):
+        return None
+
+    choices = []
+    for i, f in enumerate(findings):
+        act = f.get("action", "mask")
+        if f.get("source") == "exif" and act == "blur":
+            act = "remove"
+        choices.append(UserChoice(idx=i, action=act))
+    res = await run_pipeline(
+        Media(image=media.image, image_ext=media.image_ext),
+        max_iterations=1,
+        report=quiet,
+        user_choices=choices,
+        initial_findings=findings,
+    )
+    v = res.verification or {}
+    keys = ("before", "removed", "weakened", "remaining", "kept", "new", "clean", "risk_total")
+    return {k: v.get(k) for k in keys} | {
+        "risk_before": res.before.risk,
+        "risk_after": res.after.risk,
+    }
+
+
+async def run_image(name, g, media, context, runs, with_verify=True):
     gts = gt_objects(g)
     rec = {"image": name, "max_severity": g["max_severity"], "e2e": [], "oracle": []}
+    first = None
     for _ in range(runs):
         t = time.monotonic()
         try:
             findings = await detect(media, watchlist=context.watchlist if context else None)
             judged, combos = await judge(media, findings, context)
             a = await analyze(media, judged, combos, context)
+            first = first or a
             rec["e2e"].append(
                 {
                     "risky": a.risky,
@@ -262,6 +293,11 @@ async def run_image(name, g, media, context, runs):
             )
         except Exception as e:
             rec["oracle"].append({"error": repr(e)})
+    if with_verify and first is not None and first.findings:
+        try:
+            rec["verify"] = await run_verify(media, first.findings)
+        except Exception as e:
+            rec["verify"] = {"error": repr(e)}
     return rec, gts
 
 
@@ -369,7 +405,9 @@ async def evaluate(label, runs, skip_context, country, day):
             print(
                 f"[{label}] {n}/{len(GT)} {name} ({g['dominant_type']}, 최대 심각도 {g['max_severity']})"
             )
-            rec, gts = await run_image(name, g, media_of(path), context, runs)
+            rec, gts = await run_image(
+                name, g, media_of(path), context, runs, os.environ.get("EVAL_VERIFY", "1") == "1"
+            )
             gtmap[name] = gts
             records.append(rec)
             raw.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -400,16 +438,153 @@ def compare():
     print("\n" + "\n".join(lines) + "\n\n저장: out_eval/compare.md")
 
 
+# ---------------------------------------------------------------- 3. 발표용 표 (out_eval/tables.md)
+TYPE_KO = {
+    "personal_info": "개인정보",
+    "location": "촬영 위치",
+    "preferences": "취향·생활",
+    "social_circle": "인간관계",
+    "others_private": "타인 정보",
+}
+
+
+def _load_runs():
+    runs = {}
+    for d in sorted(Path("out_eval").glob("*/")):
+        sj, rj = d / "summary.json", d / "raw.jsonl"
+        if sj.exists() and rj.exists():
+            raws = [json.loads(x) for x in rj.read_text("utf-8").splitlines() if x.strip()]
+            runs[d.name] = (json.loads(sj.read_text("utf-8")), raws)
+    return runs
+
+
+def _table(head, rows):
+    out = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+    out += ["| " + " | ".join("-" if v is None else str(v) for v in r) + " |" for r in rows]
+    return "\n".join(out)
+
+
+def _p(v):
+    return None if v is None else f"{v * 100:.0f}%"
+
+
+def _by_type(raws):
+    hit, tot = {t: 0 for t in TYPE_KO}, {t: 0 for t in TYPE_KO}
+    for rec in raws:
+        gts = gt_objects(GT[rec["image"]])
+        for run in rec["e2e"]:
+            if "error" in run:
+                continue
+            m = match(gts, [f for f in run["findings"] if f.get("bbox")])
+            for gi, g in enumerate(gts):
+                if g["top_type"] in tot:
+                    tot[g["top_type"]] += 1
+                    hit[g["top_type"]] += gi in m
+    return {t: (pct(hit[t], tot[t]), tot[t]) for t in TYPE_KO}
+
+
+def _verify(raws):
+    vs = [r["verify"] for r in raws if r.get("verify") and "error" not in r["verify"]]
+    if not vs:
+        return None
+    b = sum(v["before"] or 0 for v in vs)
+    tb = sum((v.get("risk_total") or {}).get("before", 0) for v in vs)
+    ta = sum((v.get("risk_total") or {}).get("after", 0) for v in vs)
+    return {
+        "n": len(vs),
+        "before": b,
+        "removed": sum(v["removed"] or 0 for v in vs),
+        "weakened": sum(v["weakened"] or 0 for v in vs),
+        "remaining": sum(v["remaining"] or 0 for v in vs),
+        "new": sum(v["new"] or 0 for v in vs),
+        "clean": pct(sum(bool(v["clean"]) for v in vs), len(vs)),
+        "total": (tb, ta, pct(tb - ta, tb)),
+        "risk": (
+            round(statistics.mean(v["risk_before"] for v in vs), 3),
+            round(statistics.mean(v["risk_after"] for v in vs), 3),
+        ),
+    }
+
+
+def write_tables():
+    runs = _load_runs()
+    if not runs:
+        return
+    names = list(runs)
+    S = {n: runs[n][0] for n in names}
+    V = {n: _verify(runs[n][1]) for n in names}
+    md = ["# ⓪①②④ 성능 평가 (DIPA2 20장)", ""]
+    md.append("## 표 1. 한눈에 보기")
+    rows = [
+        ["⓪ 맥락 실행 간 일치 (Jaccard)"] + [S[n].get("⓪_jaccard_between_runs") for n in names],
+        ["① 탐지 recall (IoU≥0.5)"] + [_p(S[n].get("①_recall@IoU0.5")) for n in names],
+        ["① 탐지 precision (하한)"] + [_p(S[n].get("①_precision@IoU0.5(하한)")) for n in names],
+        ["① 카테고리 정확도"] + [_p(S[n].get("①_category_acc")) for n in names],
+        ["② 사람 심각도와 순위 상관 ρ (정답 물체)"]
+        + [S[n].get("②_spearman_oracle") for n in names],
+        ["② 같은 판정 반복 일치율"] + [_p(S[n].get("②_same_level_all_runs")) for n in names],
+        ["④ 처음 찾은 항목 제거율"]
+        + [_p(pct(V[n]["removed"], V[n]["before"])) if V[n] else None for n in names],
+        ["④ 위험 총량 감소율"] + [_p(V[n]["total"][2]) if V[n] else None for n in names],
+        ["소요 시간 (분)"] + [S[n].get("minutes") for n in names],
+    ]
+    md += [_table(["지표"] + names, rows), ""]
+    md.append("## 표 2. ① 정보 유형별 탐지 recall")
+    bt = {n: _by_type(runs[n][1]) for n in names}
+    rows = [[TYPE_KO[t]] + [f"{_p(bt[n][t][0])} (n={bt[n][t][1]})" for n in names] for t in TYPE_KO]
+    md += [_table(["DIPA 정보 유형"] + names, rows), ""]
+    md.append("## 표 3. ② 위험도 판정")
+    rows = [
+        ["순위 상관 ρ, 정답 물체 투입"] + [S[n].get("②_spearman_oracle") for n in names],
+        ["순위 상관 ρ, ①→② 전체 흐름"] + [S[n].get("②_spearman_e2e") for n in names],
+        ["비교한 물체 수 (정답 / 전체 흐름)"]
+        + [f"{S[n].get('②_n_oracle')} / {S[n].get('②_n_e2e')}" for n in names],
+        ["반복 실행 판정 일치율"] + [_p(S[n].get("②_same_level_all_runs")) for n in names],
+        ["반복 실행 점수 표준편차 (0~16)"] + [S[n].get("②_score_sd_mean") for n in names],
+        ["위험 낮은 사진을 위험 없음으로"]
+        + [_p(S[n].get("low_risk_images_not_risky")) for n in names],
+    ]
+    md += [_table(["지표"] + names, rows), ""]
+    md.append("## 표 4. ④ 재검증 (② 추천 처리 1회)")
+    rows = []
+    for label, f in [
+        ("사진 수", lambda v: v["n"]),
+        ("처음 찾은 항목", lambda v: v["before"]),
+        ("제거 / 약해짐 / 남음", lambda v: f"{v['removed']} / {v['weakened']} / {v['remaining']}"),
+        ("재검증에서 새로 찾음", lambda v: v["new"]),
+        (
+            "위험 총량 처리 전 → 후",
+            lambda v: f"{v['total'][0]} → {v['total'][1]} ({_p(v['total'][2])} 감소)",
+        ),
+        ("최고 위험도 평균 처리 전 → 후", lambda v: f"{v['risk'][0]} → {v['risk'][1]}"),
+        ("경고 없이 끝난 사진 (clean)", lambda v: _p(v["clean"])),
+    ]:
+        rows.append([label] + [f(V[n]) if V[n] else None for n in names])
+    md += [_table(["지표"] + names, rows), ""]
+    md.append(
+        "기준: ① IoU≥0.5 (PASCAL VOC·COCO), ② Spearman ρ vs DIPA2 7점 심각도 (Xu et al., IMWUT 2024), "
+        "precision 은 DIPA 가 위협 물체만 라벨해서 하한값."
+    )
+    Path("out_eval/tables.md").write_text("\n".join(md), "utf-8")
+    print("\n" + "\n".join(md) + "\n\n발표용 표: out_eval/tables.md")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--only", choices=["gemini", "qwen"])
     p.add_argument("--runs", type=int, default=3, help="Gemini 반복 횟수")
     p.add_argument("--qwen-runs", type=int, default=1, help="Qwen 반복 횟수 (느려서 기본 1)")
     p.add_argument("--skip-context", action="store_true")
+    p.add_argument("--no-verify", action="store_true", help="④ 재검증 생략 (빠르게)")
     p.add_argument("--country", default="KR")
     p.add_argument("--day", default=date.today().isoformat())
+    p.add_argument("--tables", action="store_true", help="이미 돌린 결과로 표만 다시 만들기")
     p.add_argument("--_worker", nargs=2, help=argparse.SUPPRESS)
     a = p.parse_args()
+    if a.tables:
+        compare()
+        write_tables()
+        return
     if a._worker:
         asyncio.run(evaluate(a._worker[0], int(a._worker[1]), a.skip_context, a.country, a.day))
         return
@@ -433,11 +608,18 @@ def main():
         if a.skip_context:
             cmd.append("--skip-context")
         r = subprocess.run(
-            cmd, env={**os.environ, "VLM_PROVIDER": provider, "PYTHONPATH": os.getcwd()}
+            cmd,
+            env={
+                **os.environ,
+                "VLM_PROVIDER": provider,
+                "EVAL_VERIFY": "0" if a.no_verify else "1",
+                "PYTHONPATH": os.getcwd(),
+            },
         )
         if r.returncode:
             print(f"[{provider}] 실패 (코드 {r.returncode}), 다음으로 넘어감")
     compare()
+    write_tables()
 
 
 if __name__ == "__main__":
