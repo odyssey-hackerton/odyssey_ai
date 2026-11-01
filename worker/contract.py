@@ -55,10 +55,21 @@ InputType = Literal["image", "text", "image_text"]
 
 
 class UserChoice(ContractModel):
-    """사용자가 선택한 탐지 항목별 처리 방법."""
+    """사용자가 선택한 탐지 항목별 처리 방법.
+
+    에이전트3(보호 편집)이 워커 안에서 최종 렌더를 하므로 프론트 편집 상태를 그대로 전달한다.
+    action: "mask" | "blur" | "mosaic" | "partialMask" | "remove" | "regenerate" | "skip"
+    (글 단서는 "mask" | "remove" | "skip" 만)
+    """
 
     idx: int  # findings 리스트 인덱스
-    action: str  # "blur" | "mask" | "remove" | "skip"
+    action: str
+    # 사용자가 모서리로 크기를 조절한 영역 (픽셀 xyxy). 없으면 최초 탐지 bbox 를 쓴다.
+    bbox: list[float] | None = None
+    # partialMask: bbox 안의 상대 좌표 [x1, y1, x2, y2] (0~1)
+    mask_box: list[float] | None = None
+    # regenerate: API 가 Redis 에 보관한 생성 패치 ID (generation_key)
+    generation_id: str | None = None
 
 
 class Finding(BaseModel):
@@ -107,3 +118,13 @@ class ResultMessage(ContractModel):
     findings: list[Finding] = Field(default_factory=list)
     details: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+
+
+# ------------------------------------------------- 이미지재생성 패치 (에이전트3)
+# 편집 화면의 이미지재생성은 API 서버가 Gemini 를 호출하고, 결과 패치 PNG 를 base64 로 이 키에
+# 보관한다 (TTL = progress_ttl_seconds). 사용자가 적용하면 UserChoice.generation_id 로 전달되어
+# 워커의 Phase 2 변환이 같은 픽셀을 합성한다.
+
+
+def generation_key(generation_id: str) -> str:
+    return f"generation:{generation_id}"
