@@ -110,10 +110,13 @@ J1 = f"""너는 사진 프라이버시 평가 채점관이다. 사진을 처음 
    category 는 {CATS} 중 하나.
 판단 근거는 사진에 보이는 것만 쓴다. 추측으로 단서를 만들지 않는다."""
 
-J2 = f"""너는 사진 프라이버시 평가 채점관이다. 아래 사진은 보호 처리(가리기·블러 등)가 끝난 사진이다.
-입력: 처리 전에 찾았던 항목 목록 (id, 제목, 박스).
+J2 = f"""너는 사진 프라이버시 평가 채점관이다. 첫 번째 사진은 처리 전 원본, 두 번째 사진은 보호 처리(가리기·블러 등) 후 사진이다.
+두 사진을 비교해서 채점한다. 입력: 처리 전에 시스템이 찾았던 항목 목록 (id, 제목, 원본 기준 박스).
 1) 항목마다 still_visible: 처리 후 사진에서 그 단서를 아직 알아볼 수 있으면 true.
-2) new_clues: 처리 후 사진에 남아 있는, 목록에 없는 의미 있는 단서. severity {SEVERITY}."""
+2) remaining: 목록에 없는데 처리 후 사진에서도 알아볼 수 있는 의미 있는 단서 (처음부터 놓친 것 포함).
+   introduced_by_edit: 원본에는 없었고 처리 때문에 새로 생긴 단서면 true (예: 처리 흔적이 오히려 눈에 띄어 정보가 됨).
+   severity {SEVERITY}.
+원본에도 똑같이 있던 단서를 '새로 생긴 것'으로 세지 않는다."""
 
 S1 = {
     "type": "object",
@@ -157,16 +160,20 @@ S2 = {
                 "required": ["id", "still_visible"],
             },
         },
-        "new_clues": {
+        "remaining": {
             "type": "array",
             "items": {
                 "type": "object",
-                "properties": {"title": {"type": "string"}, "severity": {"type": "integer"}},
-                "required": ["title", "severity"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "severity": {"type": "integer"},
+                    "introduced_by_edit": {"type": "boolean"},
+                },
+                "required": ["title", "severity", "introduced_by_edit"],
             },
         },
     },
-    "required": ["items", "new_clues"],
+    "required": ["items", "remaining"],
 }
 
 
@@ -192,18 +199,20 @@ def lines(findings, size):
     return "\n".join(rows) or "(없음)"
 
 
-async def ask_judge(image_bytes, text, instruction, schema):
+async def ask_judge(images, text, instruction, schema):
     from stages import gemini
     from stages.risk import _image_block
     from worker.config import get_settings
 
-    block, _ = await asyncio.to_thread(_image_block, image_bytes)
+    if isinstance(images, bytes):
+        images = [images]
+    blocks = [(await asyncio.to_thread(_image_block, im))[0] for im in images]
     s = get_settings()
     old = s.gemini_model
     s.gemini_model = judge_model()
     try:
         return await gemini.generate_json(
-            [block, {"type": "text", "text": text}], schema, instruction, max_output_tokens=16384
+            [*blocks, {"type": "text", "text": text}], schema, instruction, max_output_tokens=16384
         )
     finally:
         s.gemini_model = old
@@ -281,7 +290,10 @@ async def run_one(path):
         )
         if res.output.image:
             rec["judge2"] = await ask_judge(
-                res.output.image, "처리 전 항목:\n" + lines(findings, size), J2, S2
+                [raw, res.output.image],
+                "사진 1 = 처리 전, 사진 2 = 처리 후.\n처리 전 항목:\n" + lines(findings, size),
+                J2,
+                S2,
             )
     rec["sec"] = round(time.monotonic() - t, 1)
     return rec
@@ -351,6 +363,10 @@ def spearman(x, y):
     return round(num / den, 3) if den else None
 
 
+def valid_ids(j1, i):
+    return any(x.get("id") == i and x.get("valid") for x in j1.get("items", []))
+
+
 def clamp(s):
     return min(4, max(1, int(s or 1)))
 
@@ -358,7 +374,8 @@ def clamp(s):
 def score(recs):
     found = valid = missed = hi_valid = hi_missed = 0
     s_ours, s_judge, risk, errors = [], [], [], 0
-    before_n = still = new_after = 0
+    before_n = still = 0
+    clues_before = clues_after = introduced = 0
     secs = []
     for r in recs:
         if "error" in r or "judge1" not in r:
@@ -388,7 +405,17 @@ def score(recs):
             items = r["judge2"].get("items", [])
             before_n += len(byid)
             still += sum(bool(i.get("still_visible")) for i in items if i.get("id") in byid)
-            new_after += len(r["judge2"].get("new_clues", []))
+            rem = r["judge2"].get("remaining", [])
+            introduced += sum(bool(x.get("introduced_by_edit")) for x in rem)
+            j1 = r["judge1"]
+            clues_before += sum(bool(i.get("valid")) for i in j1.get("items", [])) + len(
+                j1.get("missed", [])
+            )
+            clues_after += sum(
+                bool(i.get("still_visible"))
+                for i in items
+                if i.get("id") in byid and valid_ids(j1, i.get("id"))
+            ) + sum(not x.get("introduced_by_edit") for x in rem)
     exact = pct(sum(a == b for a, b in zip(s_ours, s_judge, strict=True)), len(s_ours))
     return {
         "사진 수": len(recs) - errors,
@@ -402,7 +429,9 @@ def score(recs):
             [a for a, _ in risk], [b for _, b in risk]
         ),
         "④ 처리 후 제거율 (채점관 기준)": pct(before_n - still, before_n),
-        "④ 처리 후 새로 보이는 단서": new_after,
+        "④ 채점관이 본 단서 수 처리 전 → 후": f"{clues_before} → {clues_after}",
+        "④ 단서 감소율 (전후 비교)": pct(clues_before - clues_after, clues_before),
+        "④ 처리 때문에 새로 생긴 단서": introduced,
         "사진당 평균 시간 (초)": round(statistics.mean(secs), 1) if secs else None,
         "실패": errors,
     }
