@@ -1,4 +1,6 @@
-"""⓪ 맥락 → ① 탐지 → ② 위험 분석 → ③ 변환 → ② 재검증 (위험이 남으면 최대 max_iterations 회 반복).
+"""⓪ 맥락 → ① 탐지 → ② 위험 분석 → ③ 변환 → ④ 재검증 (위험이 남으면 최대 max_iterations 회 반복).
+
+② 와 ④ 는 같은 코드(stages.risk.find_and_judge / analyze / assess)를 쓴다.
 
 단계가 바뀔 때마다 report 로 진행 상태를 알리면 프론트 진행 표시에 그대로 나온다.
 """
@@ -7,11 +9,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from stages.context import Context, build_context
-from stages.detect import detect
-from stages.risk import analyze, judge
+from stages import risk
+from stages.context import build_context
 from stages.transform import transform
 from stages.types import Assessment, Media
+from stages.verify import verify
 from worker.contract import JobStatus, UserChoice
 
 Report = Callable[..., Awaitable[None]]  # report(status, iteration=0, message=None)
@@ -28,15 +30,10 @@ class PipelineResult:
     before: Assessment  # 처리 전 분석
     after: Assessment  # 마지막 재검증 결과 (처리하지 않았으면 before 와 같다)
     iterations: int
+    verification: dict[str, Any] | None = None  # ④ 처리 전후 객체 비교 (재검증했을 때만)
 
 
 Findings = list[dict[str, Any]]
-
-
-async def _detect(media: Media, context: Context) -> tuple[Findings, Findings]:
-    """① 탐지 → ② 판정(원본이 있을 때 VLM). (findings, combos) 를 돌려준다."""
-    findings = await detect(media, watchlist=context.watchlist)
-    return await judge(media, findings, context)
 
 
 def _apply_user_choices(assessment: Assessment, choices: list[UserChoice]) -> Assessment:
@@ -72,13 +69,13 @@ async def run_detection_phase(
         findings, combos = initial_findings, initial_combos or []
     else:
         # ② 판정은 원본 사진이 필요하므로 원본을 지우기 전에 끝낸다.
-        findings, combos = await _detect(media, context)
+        findings, combos = await risk.find_and_judge(media, context)
     if on_detected is not None:
         await on_detected(findings, combos)
         media.image = None
 
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
-    before = await analyze(media, findings, combos, context)
+    before = await risk.analyze(media, findings, combos, context)
 
     return DetectionResult(before=before)
 
@@ -102,16 +99,17 @@ async def run_pipeline(
         findings = initial_findings
     else:
         await report(JobStatus.DETECTING, message="개인정보 탐지 중")
-        findings, combos = await _detect(media, context)
+        findings, combos = await risk.find_and_judge(media, context)
 
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
-    before = await analyze(media, findings, combos, context)
+    before = await risk.analyze(media, findings, combos, context)
 
     # 사용자가 선택한 action으로 findings 덮어쓰기
     if user_choices:
         before = _apply_user_choices(before, user_choices)
 
     current, after, iterations = media, before, 0
+    verification = None
     while (
         after.risky or (user_choices is not None and iterations == 0)
     ) and iterations < max_iterations:
@@ -124,10 +122,16 @@ async def run_pipeline(
             media.image = None
 
         await report(JobStatus.VERIFYING, iteration=iterations, message="재검증 중")
-        after = await analyze(current, *await _detect(current, context), context)
+        after, verification = await verify(current, context, before)
 
         # 사용자가 남겨둔 단서를 자동 반복으로 다시 덮어쓰지 않는다.
         if user_choices is not None:
             break
 
-    return PipelineResult(output=current, before=before, after=after, iterations=iterations)
+    return PipelineResult(
+        output=current,
+        before=before,
+        after=after,
+        iterations=iterations,
+        verification=verification,
+    )

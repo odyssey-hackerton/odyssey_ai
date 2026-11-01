@@ -27,11 +27,14 @@ from stages import vlm
 from stages.catalog import REDACT_ALWAYS
 from stages.categories import LABELS
 from stages.context import RULES, Context
+from stages.detect import detect
 from stages.images import open_image, png_bytes
 from stages.types import Assessment, Media
 from worker.config import get_settings
 
 log = logging.getLogger(__name__)
+
+Findings = list[dict[str, Any]]
 
 MAX_SCORE = 16
 HIGH_SCORE = 9  # S≥3 이고 L≥3
@@ -195,6 +198,30 @@ def _where(finding: dict[str, Any], size: tuple[int, int] | None) -> str:
     return "위치 없음"
 
 
+# 같은 객체로 볼 박스 겹침. PASCAL VOC·COCO 의 기본 매칭 기준 0.5. ④ 재검증도 이 값을 쓴다.
+IOU_MATCH = 0.5
+EDIT_LABELS = {"blur": "블러", "mask": "덮기", "remove": "지우기"}
+
+
+def iou(a: list[float], b: list[float]) -> float:
+    x1, y1 = max(a[0], b[0]), max(a[1], b[1])
+    x2, y2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _edited_as(finding: dict[str, Any], processed: Findings) -> str | None:
+    """재검증 때: 이 객체 자리가 이미 편집된 자리면 편집 종류를 돌려준다."""
+    if not finding.get("bbox"):
+        return None
+    for p in processed:
+        if p.get("action") in EDIT_LABELS and p.get("bbox"):
+            if iou(finding["bbox"], p["bbox"]) >= IOU_MATCH:
+                return p["action"]
+    return None
+
+
 def _object_lines(findings: list[dict[str, Any]], size: tuple[int, int] | None) -> str:
     lines = []
     for f in findings:
@@ -206,6 +233,11 @@ def _object_lines(findings: list[dict[str, Any]], size: tuple[int, int] | None) 
             line += f"\n  설명: {f['description']}"
         if f.get("normalized"):  # ① 이 읽은 위치 단서 글자 (간판·주소·정류장만)
             line += f"\n  읽힌 글자: {f['normalized']}"
+        if f.get("edited_as"):  # ④ 재검증: 이미 편집된 자리
+            line += (
+                f"\n  처리 이력: 이 자리는 이미 {EDIT_LABELS[f['edited_as']]} 처리됐다. "
+                "처리 후에도 남은 정보로만 판단한다"
+            )
         lines.append(line)
     return "\n".join(lines)
 
@@ -437,3 +469,24 @@ async def analyze(
         findings=scored,
         combos=scored_combos,
     )
+
+
+# ---------------------------------------------------------------- ② 진입점 (④ 재검증도 이것만 쓴다)
+async def find_and_judge(
+    media: Media, context: Context | None, processed: Findings | None = None
+) -> tuple[Findings, Findings]:
+    """① 탐지 → ② 판정. (findings, combos). 원본 사진이 있을 때 부른다.
+    processed: ④ 재검증 때 처리 전 findings (action 포함). 이미 편집된 자리는 판정에 알려준다."""
+    findings = await detect(media, watchlist=context.watchlist if context else None)
+    if processed:
+        for f in findings:
+            if edited := _edited_as(f, processed):
+                f["edited_as"] = edited
+    return await judge(media, findings, context)
+
+
+async def assess(
+    media: Media, context: Context | None, processed: Findings | None = None
+) -> Assessment:
+    """② 전체 = find_and_judge → analyze. ④ 재검증은 이 함수를 그대로 다시 부른다."""
+    return await analyze(media, *await find_and_judge(media, context, processed), context)

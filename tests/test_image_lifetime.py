@@ -28,7 +28,7 @@ def image_job():
 async def test_detection_deletes_before_analysis_and_recovers_without_original(monkeypatch):
     msg, storage, redis = image_job()
     detector = AsyncMock(return_value=[])
-    monkeypatch.setattr("worker.pipeline.detect", detector)
+    monkeypatch.setattr("stages.risk.detect", detector)
 
     async def analyze(media, findings, *_):
         assert media.image is None
@@ -36,7 +36,7 @@ async def test_detection_deletes_before_analysis_and_recovers_without_original(m
         assert await redis.get(f"{execution_key(msg)}:checkpoint")
         return Assessment(risky=False, risk=0, findings=findings)
 
-    monkeypatch.setattr("worker.pipeline.analyze", analyze)
+    monkeypatch.setattr("stages.risk.analyze", analyze)
     first = await process(redis, storage, Settings(), msg)
     replay = await process(redis, storage, Settings(), msg)
     assert replay == first and first.status == "AWAITING_USER"
@@ -55,7 +55,7 @@ async def test_empty_findings_still_strip_metadata_and_delete_before_verificatio
             assert "private" not in image.info
         return []
 
-    monkeypatch.setattr("worker.pipeline.detect", verify)
+    monkeypatch.setattr("stages.risk.detect", verify)
     await handle(redis, storage, Settings(), "1-0", {"payload": msg.model_dump_json()})
     result = ResultMessage.model_validate_json(redis.results[0]["payload"])
     assert result.status == "DONE" and result.iterations == 1
@@ -66,7 +66,7 @@ async def test_empty_findings_still_strip_metadata_and_delete_before_verificatio
 async def test_verification_restart_uses_edited_checkpoint(monkeypatch):
     msg, storage, redis = image_job()
     msg = msg.model_copy(update={"user_choices": [], "initial_findings": []})
-    monkeypatch.setattr("worker.pipeline.detect", AsyncMock(side_effect=RuntimeError("restart")))
+    monkeypatch.setattr("stages.risk.detect", AsyncMock(side_effect=RuntimeError("restart")))
     with pytest.raises(RuntimeError):
         await process(redis, storage, Settings(), msg)
     assert msg.object_key not in storage.objects
@@ -74,7 +74,7 @@ async def test_verification_restart_uses_edited_checkpoint(monkeypatch):
     monkeypatch.setattr(
         "worker.pipeline.transform", AsyncMock(side_effect=AssertionError("re-edit"))
     )
-    monkeypatch.setattr("worker.pipeline.detect", AsyncMock(return_value=[]))
+    monkeypatch.setattr("stages.risk.detect", AsyncMock(return_value=[]))
     result = await process(redis, storage, Settings(), msg)
     assert result.status == "DONE"
 
@@ -82,7 +82,7 @@ async def test_verification_restart_uses_edited_checkpoint(monkeypatch):
 async def test_completed_execution_replays_without_model_or_original(monkeypatch):
     msg, storage, redis = image_job()
     detector = AsyncMock(return_value=[])
-    monkeypatch.setattr("worker.pipeline.detect", detector)
+    monkeypatch.setattr("stages.risk.detect", detector)
     fields = {"payload": msg.model_dump_json()}
     await handle(redis, storage, Settings(), "1-0", fields)
     await handle(redis, storage, Settings(), "1-0", fields)
@@ -93,7 +93,7 @@ async def test_completed_execution_replays_without_model_or_original(monkeypatch
 
 async def test_failed_model_still_deletes_original(monkeypatch):
     msg, storage, redis = image_job()
-    monkeypatch.setattr("worker.pipeline.detect", AsyncMock(side_effect=TimeoutError()))
+    monkeypatch.setattr("stages.risk.detect", AsyncMock(side_effect=TimeoutError()))
     await handle(redis, storage, Settings(), "1-0", {"payload": msg.model_dump_json()})
     assert msg.object_key not in storage.objects
     assert json.loads(redis.results[0]["payload"])["status"] == "FAILED"
@@ -102,7 +102,7 @@ async def test_failed_model_still_deletes_original(monkeypatch):
 async def test_failed_deletion_blocks_publication_and_retries_from_checkpoint(monkeypatch):
     msg, storage, redis = image_job()
     detector = AsyncMock(return_value=[])
-    monkeypatch.setattr("worker.pipeline.detect", detector)
+    monkeypatch.setattr("stages.risk.detect", detector)
     delete = storage.delete
     storage.delete = AsyncMock(side_effect=RuntimeError("S3 unavailable"))
     fields = {"payload": msg.model_dump_json()}
@@ -119,7 +119,7 @@ async def test_held_execution_lock_does_not_run_or_ack(monkeypatch):
     msg, storage, redis = image_job()
     redis.lock(f"{execution_key(msg)}:lock").acquire.return_value = False
     detector = AsyncMock()
-    monkeypatch.setattr("worker.pipeline.detect", detector)
+    monkeypatch.setattr("stages.risk.detect", detector)
     await handle(redis, storage, Settings(), "1-0", {"payload": msg.model_dump_json()})
     detector.assert_not_called()
     assert not redis.acks
@@ -136,7 +136,7 @@ async def test_selected_snapshot_still_applies_after_reupload(monkeypatch):
         }
     )
     detector = AsyncMock(return_value=[])
-    monkeypatch.setattr("worker.pipeline.detect", detector)
+    monkeypatch.setattr("stages.risk.detect", detector)
     result = await process(redis, storage, Settings(), msg)
     with Image.open(BytesIO(storage.objects[result.result_object_key])) as image:
         assert image.getpixel((5, 5)) == (20, 33, 56)
@@ -145,7 +145,7 @@ async def test_selected_snapshot_still_applies_after_reupload(monkeypatch):
 
 async def test_checkpoint_failure_still_deletes_original(monkeypatch):
     msg, storage, redis = image_job()
-    monkeypatch.setattr("worker.pipeline.detect", AsyncMock(return_value=[]))
+    monkeypatch.setattr("stages.risk.detect", AsyncMock(return_value=[]))
     redis.setex = AsyncMock(side_effect=RedisConnectionError())
     with pytest.raises(RedisConnectionError):
         await handle(redis, storage, Settings(), "1-0", {"payload": msg.model_dump_json()})
