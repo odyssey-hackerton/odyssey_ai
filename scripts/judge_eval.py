@@ -6,7 +6,7 @@
   uv run python scripts/judge_eval.py --tables        # 이미 돌린 결과로 표만
 
 사진: eval_data/judge/ 의 jpg/png 전부 + DIPA 샘플 5장 (eval_data/images, odyssey_eval.py 가 받아 둔 것).
-채점관: JUDGE_MODEL (기본 gemini-3.8-pro). 테스트 대상과 다른, 더 큰 모델이어야 한다. Gemini API 키 사용.
+채점관: JUDGE_MODEL (없으면 키로 쓸 수 있는 최신 gemini-*-pro 자동 선택). 테스트 대상과 다른, 더 큰 모델이어야 한다. Gemini API 키 사용.
 
 채점
 - ① 사진 + ① 결과(박스) 를 채점관에 보여주고: 항목마다 맞는 단서인지(valid), 심각도 1~4, 놓친 단서 목록.
@@ -42,16 +42,61 @@ DIPA_PICK = [
 OUT = Path("out_eval")
 
 
+_JUDGE = None
+
+
+def _pick_pro_model():
+    """API 키로 쓸 수 있는 모델 목록에서 가장 최신 gemini-*-pro 를 고른다."""
+    import re
+    import urllib.request
+
+    from worker.config import get_settings
+
+    key = get_settings().gemini_api_key
+    if not key:
+        return None
+    req = urllib.request.Request(
+        "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+        headers={"x-goog-api-key": key.get_secret_value()},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            models = json.loads(r.read()).get("models", [])
+    except Exception as e:
+        print("모델 목록 조회 실패:", repr(e)[:120])
+        return None
+    names = [m["name"].removeprefix("models/") for m in models]
+    pros = [
+        n
+        for n in names
+        if re.match(r"gemini-[\d.]+-pro", n) and not re.search(r"tts|image|audio|vision", n)
+    ]
+
+    def rank(n):
+        ver = tuple(int(x) for x in re.findall(r"\d+", n.split("-")[1]))
+        return (ver, "preview" not in n and "exp" not in n, -len(n))
+
+    print("쓸 수 있는 Pro 모델:", ", ".join(sorted(pros, key=rank, reverse=True)[:5]) or "없음")
+    return max(pros, key=rank) if pros else None
+
+
 def judge_model():
-    """JUDGE_MODEL: 환경변수 → .env → 기본값."""
-    if v := os.environ.get("JUDGE_MODEL"):
-        return v
+    """JUDGE_MODEL: 환경변수 → .env → 키로 쓸 수 있는 최신 Pro 자동 선택."""
+    global _JUDGE
+    if _JUDGE:
+        return _JUDGE
+    _JUDGE = os.environ.get("JUDGE_MODEL")
     env = Path(".env")
-    if env.exists():
+    if not _JUDGE and env.exists():
         for line in env.read_text("utf-8").splitlines():
             if line.strip().startswith("JUDGE_MODEL="):
-                return line.split("=", 1)[1].strip()
-    return "gemini-3.8-pro"
+                _JUDGE = line.split("=", 1)[1].strip()
+    if not _JUDGE:
+        _JUDGE = _pick_pro_model()
+        if not _JUDGE:
+            raise SystemExit("채점관 모델을 못 찾음: .env 에 JUDGE_MODEL=<Pro 모델명> 을 넣어줘")
+    print("채점관 모델:", _JUDGE)
+    return _JUDGE
 
 
 SEVERITY = "1 무시 가능, 2 제한적, 3 상당함, 4 최대 (CNIL PIA 심각도 4단계)"
@@ -412,6 +457,7 @@ def main():
                 "사진이 없음: eval_data/judge/ 에 넣거나 odyssey_eval.py 를 먼저 한 번 돌려 DIPA 사진을 받아 둬"
             )
             return
+        os.environ["JUDGE_MODEL"] = judge_model()
         for provider in ("gemini", "qwen"):
             if a.only and provider != a.only:
                 continue
