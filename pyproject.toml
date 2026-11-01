@@ -18,6 +18,7 @@ dependencies = [
     "transformers>=4.44",
     "huggingface-hub[cli]>=0.25",
     "ko-pii>=1.16",
+    "opencv-python-headless>=4.10",
 ]
 
 [dependency-groups]
