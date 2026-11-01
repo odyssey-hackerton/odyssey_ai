@@ -16,6 +16,65 @@ API ◀──────── Redis results ◀──XADD──── worker.m
 
 워커는 Redis(일반 서버 사설 IP, 6379), S3와 Gemini HTTPS API에 접속합니다. 이 구성에는 GPU가 필요하지 않습니다. Postgres에는 접속하지 않고, 들어오는 포트도 열 필요가 없습니다.
 
+## 실행 방법
+
+### 1. 설치
+
+필요: Python 3.12, [uv](https://docs.astral.sh/uv/), git
+
+```bash
+git clone https://github.com/odyssey-hackerton/odyssey_ai.git
+cd odyssey_ai
+./scripts/setup-git-hooks.sh                # 커밋 규칙 훅 (기여할 때만)
+uv sync                                     # 의존성 설치
+uv run bash scripts/download-models.sh      # PII 모델(Veil) + PaddleOCR 캐시 (선택)
+```
+
+### 2. 환경 설정
+
+```bash
+cp .env.example .env
+```
+
+`.env` 에서 최소한 아래를 채운다.
+
+| 변수 | 값 | 필수 |
+|---|---|---|
+| `GEMINI_API_KEY` | 무료 프로젝트 Gemini 키 | 필수 (VLM 기본 경로) |
+| `TAVILY_API_KEY` | Tavily 키 | 선택 (⓪ 맥락 검색, 없으면 고정 규칙만) |
+| `VLM_PROVIDER` | `gemini`(기본) 또는 `qwen` | 선택 |
+| `QWEN_BASE_URL`, `QWEN_MODEL` | `http://localhost:8001/v1`, `Qwen/Qwen3-VL-8B-Instruct` | `qwen` 일 때 |
+| `REDIS_URL`, `AWS_*` | 일반 서버 Redis·S3 | 워커(`worker.main`) 실행할 때만 |
+
+Qwen 을 쓰려면 GPU 서버에서 먼저 띄운다:
+
+```bash
+vllm serve Qwen/Qwen3-VL-8B-Instruct --port 8001 --max-model-len 16384 --limit-mm-per-prompt '{"image":1}'
+```
+
+### 3. 실행
+
+```bash
+# 사진 한 장 처리: ⓪①② 분석 → ③ 보호 처리 → ④ 재검증
+uv run python scripts/make_output.py test.jpg output.jpg
+#   → output.jpg, output_result.json, output_steps/ (탐지 박스·처리 결과·재검증 상태)
+
+# 여러 장 ③ 처리 결과만
+uv run python scripts/batch_output.py 사진폴더/ -o out_eval/outputs
+
+# 성능 평가
+uv run python scripts/judge_eval.py --only gemini     # 채점관 모델 평가 → out_eval/tables_judge.md
+uv run python scripts/odyssey_eval.py --only gemini   # DIPA2 샘플 평가 → out_eval/tables.md
+
+# 워커 (백엔드 Redis 큐 연결)
+uv run python -m worker.check
+uv run python -m worker.main
+
+# 테스트·린트
+uv run pytest
+uv run ruff check . && uv run ruff format .
+```
+
 ## 폴더 구조
 
 ```
@@ -32,6 +91,11 @@ worker/
   check.py       통신 확인 (Redis, S3)
   queue.py       Redis 연결·진행 상태·결과 전송, 이미지재생성 패치 읽기
   storage.py     S3 읽기·쓰기
+scripts/
+  make_output.py     사진 한 장 → 처리 결과 + 단계별 사진
+  batch_output.py    여러 장 → ③ 처리 결과만
+  judge_eval.py      채점관 모델(LLM-as-a-judge) 평가
+  odyssey_eval.py    DIPA2 샘플 평가 (dipa2_sample20.json)
 ```
 
 입력 종류(`input_type`)는 세 가지이고 `Media`에 그대로 들어옵니다.

@@ -58,6 +58,16 @@ async def main():
     print(f"반복 {res.iterations}회")
     if res.output.image:
         open_image(res.output.image).convert("RGB").save(dst, quality=95)
+    from eval_viz import save_stages
+
+    save_stages(
+        dst.parent / f"{dst.stem}_steps",
+        src.stem,
+        raw,
+        findings,
+        res.output.image,
+        res.verification,
+    )
     v = res.verification or {}
     print(f"처리 후 risk={res.after.risk:.3f} clean={v.get('clean')} → {dst}")
     t = v.get("risk_total") or {}
