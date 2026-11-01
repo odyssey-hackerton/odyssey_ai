@@ -161,10 +161,8 @@ def test_regen_candidates_get_regenerate_but_still_default_to_mask(changes):
     out = regen(**changes)
     assert out["policy"]["regenerate_candidate"] is True
     assert "regenerate" in out["policy"]["allowed_actions"]
-    # 후보여도 추천 보호는 바뀌지 않는다 (간판은 가림)
-    assert out["action"] == regen(None, **changes)["action"]
-    if changes.get("source", "vlm") == "vlm":
-        assert out["action"] == "mask"
+    # 후보여도 기본 보호는 가림 (OCR 상호명 포함)
+    assert out["action"] == regen(None, **changes)["action"] == "mask"
 
 
 @pytest.mark.parametrize(

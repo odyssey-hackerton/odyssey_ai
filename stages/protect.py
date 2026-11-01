@@ -168,6 +168,8 @@ def recommend(finding: dict[str, Any], category: str, level: str) -> str:
     """보안 최소 조건을 먼저 만족하고, 그 안에서 덜 거슬리는 방법을 고른다."""
     if category == "location" or level in {"locked", "high"}:
         return "mask"
+    if finding.get("type") in SIGN_TYPES:  # 간판·표지는 OCR(글자 box)로 잡혀도 가림
+        return "mask"
     if finding.get("type") in ALWAYS_MASK_TYPES:
         return "mask"
     if category == "object":
