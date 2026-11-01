@@ -265,6 +265,13 @@ async def run_image(name, g, media, context, runs, with_verify=True):
                                 "risk_score",
                                 "risk_level",
                                 "reason",
+                                # 실패원인 분석용: 어느 탐지기가 무엇을 근거로 찾았는지
+                                "source",
+                                "score",
+                                "evidence",
+                                "seen",
+                                "readable",
+                                "attack_target",
                             )
                         }
                         for f in a.findings
@@ -298,6 +305,9 @@ async def run_image(name, g, media, context, runs, with_verify=True):
                         "risk_score": f.get("risk_score"),
                         "risk_level": f.get("risk_level"),
                         "reason": f.get("reason"),
+                        "seen": f.get("seen"),
+                        "readable": f.get("readable"),
+                        "attack_target": f.get("attack_target"),
                     }
                     for f in a.findings
                 }

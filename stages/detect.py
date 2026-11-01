@@ -30,6 +30,7 @@ from stages.catalog import CATALOG, REDACT_ALWAYS, TYPE_CATEGORY, describe
 from stages.categories import LABELS, Category
 from stages.exif import exif_findings
 from stages.images import open_image, png_bytes
+from stages.ocr import MODEL_NAME as OCR_MODEL
 from stages.ocr import read_lines
 from stages.pii import detect_pii
 from stages.types import Media
@@ -169,6 +170,14 @@ async def _vlm_findings(
         if candidate.type == "context_item" and candidate.watch_item:
             finding["watch_item"] = candidate.watch_item
         finding["action"] = "mask"
+        evidence: dict[str, Any] = {
+            "by": "vlm",
+            "model": _vlm_model(),
+            "score": candidate.score,
+            "said_risk": candidate.risk_level,
+            "said": candidate.description,
+        } | _text_evidence(candidate.type, candidate.text)
+        finding["evidence"] = [evidence]
         if candidate.source == "image":
             if image is None or candidate.box_2d is None or len(candidate.box_2d) != 4:
                 raise AIServiceError("image finding has no valid rectangle")
@@ -178,6 +187,9 @@ async def _vlm_findings(
             w, h = image.size
             finding["bbox"] = [x1 * w / 1000, y1 * h / 1000, x2 * w / 1000, y2 * h / 1000]
             finding["source"] = "vlm"
+            evidence["raw_box"] = [round(v, 1) for v in candidate.box_2d]
+            evidence["box_format"] = "ymin,xmin,ymax,xmax /1000"
+            evidence |= _box_checks(finding["bbox"], image.size)
             if candidate.text:  # 간판·주소 글자는 ② 검색어로 쓴다 (위치 단서만)
                 finding.update(_query_field(candidate.type, candidate.text))
         else:
@@ -189,6 +201,49 @@ async def _vlm_findings(
             ]
         findings.append(finding)
     return findings
+
+
+# ---------------------------------------------------------------- 탐지 근거 (evidence)
+# 어디서 틀렸는지(그라운딩·OCR·정규식·병합) 나중에 따라갈 수 있게 탐지기별 근거를 남긴다.
+# 원문은 남기지 않는다. 위치 단서(간판·주소)만 글자 그대로, 나머지는 모양만 (ddd-dddd-dddd).
+def text_shape(value: str) -> str:
+    """원문 대신 글자 모양 (숫자=d, 한글=가, 영문=a, 기호는 그대로). OCR 오독 확인용."""
+    out = []
+    for ch in value[:40]:
+        if ch.isdigit():
+            out.append("d")
+        elif "가" <= ch <= "힣":
+            out.append("가")
+        elif ch.isascii() and ch.isalpha():
+            out.append("a")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _text_evidence(type_: str, value: str | None) -> dict[str, Any]:
+    if not value or not value.strip():
+        return {}
+    if type_ in LOCATION_QUERY_TYPES:
+        return {"text": value.strip()[:100]}
+    return {"text_shape": text_shape(value.strip()), "text_len": len(value.strip())}
+
+
+def _box_checks(bbox: list[float], size: tuple[int, int]) -> dict[str, float]:
+    """그라운딩 점검용: 박스가 사진에서 차지하는 비율과 가로/세로 비."""
+    w, h = size
+    bw, bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    return {
+        "area_ratio": round(bw * bh / (w * h), 4) if w and h else 0.0,
+        "aspect": round(bw / bh, 2) if bh else 0.0,
+    }
+
+
+def _vlm_model() -> str:
+    settings = get_settings()
+    if settings.vlm_provider == "qwen":
+        return f"qwen:{settings.qwen_model}"
+    return f"gemini:{settings.gemini_model}"
 
 
 # ---------------------------------------------------------------- 로컬 탐지기
@@ -216,6 +271,20 @@ def _ocr_findings(image: Image.Image) -> list[dict[str, Any]]:
                     "line_bbox": [x1, y1, x2, y2],
                     "score": round(min(1.0, line.score * span.score), 3),
                     "action": "mask",
+                    "evidence": [
+                        {
+                            "by": "ocr",
+                            "model": OCR_MODEL,
+                            "ocr_score": round(line.score, 3),
+                            "pii_detector": span.detector,
+                            "pii_score": round(span.score, 3),
+                            # 글자 box 는 줄 box 를 글자 수 비율로 자른 추정값이다
+                            "box_method": "line_char_ratio",
+                            "line_shape": text_shape(line.text),
+                        }
+                        | _text_evidence(span.type, line.text[span.start : span.end])
+                        | _box_checks(bbox, (w, h))
+                    ],
                 }
                 | _query_field(span.type, line.text[span.start : span.end])
             )
@@ -239,10 +308,21 @@ def _text_findings(text: str) -> list[dict[str, Any]]:
             "spans": [[span.start, span.end]],
             "score": round(span.score, 3),
             "action": "mask",
+            "evidence": [
+                {"by": "text", "pii_detector": span.detector, "pii_score": round(span.score, 3)}
+                | _text_evidence(span.type, text[span.start : span.end])
+            ],
         }
         | _query_field(span.type, text[span.start : span.end])
         for span in detect_pii(text)
     ]
+
+
+def _to_box_2d(bbox: list[float], size: tuple[int, int]) -> list[int]:
+    """픽셀 [x1,y1,x2,y2] → VLM box_2d [ymin,xmin,ymax,xmax] (0~1000)."""
+    w, h = size
+    x1, y1, x2, y2 = bbox
+    return [round(y1 * 1000 / h), round(x1 * 1000 / w), round(y2 * 1000 / h), round(x2 * 1000 / w)]
 
 
 # ---------------------------------------------------------------- 병합
@@ -273,6 +353,11 @@ def _merge(base: list[dict[str, Any]], extra: list[dict[str, Any]]) -> list[dict
         if same is None:
             merged.append(dict(f))
             continue
+        extra_evidence = [
+            e | ({"merge_iou": round(_iou(f["bbox"], same["bbox"]), 2)} if "bbox" in f else {})
+            for e in f.get("evidence", [])
+        ]
+        kept_evidence = same.get("evidence", []) + extra_evidence
         detectors = sorted(
             {*same.get("detectors", [same.get("source")]), f.get("detector", f["source"])}
         )
@@ -282,6 +367,7 @@ def _merge(base: list[dict[str, Any]], extra: list[dict[str, Any]]) -> list[dict
             same["spans"] = sorted({tuple(s) for s in same["spans"] + f["spans"]})
             same["spans"] = [list(s) for s in same["spans"]]
         same["detectors"] = detectors
+        same["evidence"] = kept_evidence
     for f in merged:
         if f["type"] in REDACT_ALWAYS:
             f.pop("details", None)
@@ -314,12 +400,15 @@ async def detect(
     ocr = local.get("ocr", [])
     vlm: list[dict[str, Any]] = []
     if settings.detect_use_vlm:
-        hints = [f"{f['type']}@{[round(v) for v in f['bbox']]}" for f in ocr][:30]
+        # VLM 이 쓰는 좌표계(box_2d, 0~1000)로 알려준다. 픽셀 좌표를 그대로 주면 다른 위치로 읽힌다.
+        hints = [f"{f['type']}@{_to_box_2d(f['bbox'], image.size)}" for f in ocr][:30]
         vlm = await _vlm_findings(media, image, hints, watchlist)
 
     findings = _merge(vlm, ocr + local.get("text", []))
     findings += local.get("exif", [])
     for i, f in enumerate(findings):
+        if f.get("source") == "exif":
+            f.setdefault("evidence", [{"by": "exif", "tag": f["type"]}])
         f.setdefault("entity_id", f"f{i}")  # ②·③·④ 가 같은 항목을 가리키는 키
         f.setdefault("category", TYPE_CATEGORY.get(f["type"], "identity"))
     return findings

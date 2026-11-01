@@ -126,3 +126,33 @@ def test_qwen_request_shape():
     )
     assert parts[0]["image_url"]["url"].startswith("data:image/png;base64,QUJD")
     assert parts[1] == {"type": "text", "text": "hi"}
+
+
+def test_evidence_keeps_shape_not_value(monkeypatch):
+    img = Image.new("RGB", (200, 100), "white")
+    monkeypatch.setattr(
+        d, "read_lines", lambda image: [ocr.OcrLine("전화 010-1234-5678", 0.9, [10, 20, 190, 40])]
+    )
+    e = d._ocr_findings(img)[0]["evidence"][0]
+    assert e["by"] == "ocr" and e["pii_detector"] and e["box_method"] == "line_char_ratio"
+    assert e["text_shape"] == "ddd-dddd-dddd" and "text" not in e
+    assert "1234" not in str(e)  # 원문 숫자는 남기지 않는다
+
+
+def test_evidence_keeps_location_text():
+    assert d._text_evidence("store_name", " 행복약국 ") == {"text": "행복약국"}
+
+
+def test_ocr_hint_uses_vlm_box_format():
+    # 픽셀 [x1,y1,x2,y2] → box_2d [ymin,xmin,ymax,xmax] 0~1000
+    assert d._to_box_2d([20, 10, 100, 50], (200, 100)) == [100, 100, 500, 500]
+
+
+def test_merge_keeps_both_evidences():
+    vlm = [{"type": "phone_number", "source": "vlm", "bbox": [0, 0, 10, 10], "score": 0.9,
+            "evidence": [{"by": "vlm"}]}]  # fmt: skip
+    ocr_f = [{"type": "phone_number", "source": "ocr", "bbox": [0, 0, 10, 9], "score": 0.5,
+              "detector": "regex", "evidence": [{"by": "ocr"}]}]  # fmt: skip
+    merged = d._merge(vlm, ocr_f)
+    assert [e["by"] for e in merged[0]["evidence"]] == ["vlm", "ocr"]
+    assert merged[0]["evidence"][1]["merge_iou"] == 0.9

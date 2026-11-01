@@ -19,7 +19,7 @@ RISK_USE_VLM=false 면 judge 를 건너뛰고, analyze 는 ① 의 risk_level �
 import asyncio
 import base64
 import logging
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, ValidationError
 
@@ -74,7 +74,12 @@ Level = Annotated[int, Field(ge=1, le=4)]
 
 class _Judgement(BaseModel):
     entity_id: str
+    # 판정 근거: 사진에서 실제로 보이는 것 (근거) → 그래서 알 수 있는 것 (reason)
+    seen: Annotated[str, _cut(200)] = ""
+    readable: Literal["full", "partial", "none"] | None = None
     reason: Annotated[str, Field(min_length=1), _cut(300)]
+    # 유출되면 공격자가 노리는 지점: 이 정보로 무엇을 어떻게 알아내거나 악용하는지
+    attack_target: Annotated[str, _cut(200)] = ""
     severity: Level
     likelihood: Level
     issue: Annotated[str, _cut(120)] = ""
@@ -142,7 +147,14 @@ STEP1 = f"""너는 SNS 사진의 개인정보 위험을 판정한다.
 객체 목록의 설명·읽힌 글자는 탐지 단계가 확인한 내용이다.
 {_SUBJECT}
 객체마다:
+- seen: 사진에서 이 자리에 실제로 보이는 것. 읽히는 글자 수·선명도·크기·가려짐 정도를 쓴다.
+  예: '번호판 앞 2자리만 읽힘, 나머지는 흐림', '정면 얼굴, 이목구비 선명'. 원문 값은 쓰지 않는다.
+- readable: 개인정보 값이 읽히는/알아볼 수 있는 정도. full=전부, partial=일부, none=안 보임·가려짐.
+  none 이면 likelihood 는 1~2 이다.
 - reason: 이 객체 하나로 모르는 사람이 무엇을 알 수 있는지. 한국어 1~2문장.
+- attack_target: 이 정보가 유출되면 공격자가 노리는 지점. 무엇을 어디서 어떻게 알아내거나 악용하는지
+  한국어 1문장. 예: '차량번호로 주차·중고차 앱을 검색해 소유자 동선 추적', '전화번호로 스미싱'.
+  readable=none 이면 빈 문자열.
 - severity, likelihood: 'type별 기준'이 있으면 그 값에서 시작하고, 없으면 아래 기준으로 고른다.
   객체 하나만 보고 판단한다 (조합은 따로 한다).
 - issue: '오늘의 사회 이슈' 중 이 객체와 직접 관련된 이슈 제목 그대로, 없으면 빈 문자열.
@@ -230,6 +242,22 @@ def _edited_as(finding: dict[str, Any], processed: Findings) -> str | None:
     return None
 
 
+def _evidence_note(evidence: list[dict[str, Any]] | None) -> str:
+    """① 탐지 근거를 ② 프롬프트용 한 줄로. 원문 값은 ① 에서 이미 빠져 있다."""
+    parts = []
+    for e in evidence or []:
+        by = e.get("by")
+        if by == "ocr":
+            shape = e.get("text") or e.get("text_shape", "")
+            score, detector = e.get("ocr_score"), e.get("pii_detector")
+            parts.append(f"OCR 글자 인식(신뢰도 {score}, {detector}) {shape}")
+        elif by == "text":
+            parts.append(f"캡션 {e.get('pii_detector')} 판별")
+        elif by == "vlm":
+            parts.append(f"VLM 시각 탐지(신뢰도 {e.get('score')})")
+    return " + ".join(parts)
+
+
 def _object_lines(findings: list[dict[str, Any]], size: tuple[int, int] | None) -> str:
     lines = []
     for f in findings:
@@ -241,6 +269,8 @@ def _object_lines(findings: list[dict[str, Any]], size: tuple[int, int] | None) 
             line += f"\n  설명: {f['description']}"
         if f.get("normalized"):  # ① 이 읽은 위치 단서 글자 (간판·주소·정류장만)
             line += f"\n  읽힌 글자: {f['normalized']}"
+        if note := _evidence_note(f.get("evidence")):
+            line += f"\n  탐지 근거: {note}"
         if f.get("edited_as"):  # ④ 재검증: 이미 편집된 자리
             line += (
                 f"\n  처리 이력: 이 자리는 이미 {EDIT_LABELS[f['edited_as']]} 처리됐다. "
@@ -397,6 +427,9 @@ async def judge(
             {
                 **f,
                 "reason": j.reason,
+                **({"seen": j.seen} if j.seen else {}),
+                **({"readable": j.readable} if j.readable else {}),
+                **({"attack_target": j.attack_target} if j.attack_target else {}),
                 "severity": j.severity,
                 "likelihood": j.likelihood,
                 **({"issue": j.issue} if j.issue else {}),
