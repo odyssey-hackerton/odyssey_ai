@@ -20,11 +20,12 @@ from redis.exceptions import ResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from stages.gemini import AIServiceError
+from stages.protect import PolicyViolation
 from stages.types import Media
 from worker.config import Settings, get_settings
 from worker.contract import JobMessage, JobStatus, ResultMessage
 from worker.pipeline import run_detection_phase, run_pipeline
-from worker.queue import create_redis, ensure_group, send_result, set_progress
+from worker.queue import create_redis, ensure_group, load_patches, send_result, set_progress
 from worker.storage import Storage, result_key
 
 logger = logging.getLogger("worker")
@@ -126,6 +127,10 @@ async def process(
                 )
             await discard_original(storage, msg.object_key)
 
+        # 편집 화면에서 API 가 만들어 Redis 에 둔 이미지재생성 패치
+        patches = await load_patches(
+            redis, [c.generation_id or "" for c in msg.user_choices if c.action == "regenerate"]
+        )
         resume_output = None
         if checkpoint:
             resume_output = Media(
@@ -145,6 +150,7 @@ async def process(
             ),
             resume_output=resume_output,
             on_transformed=transformed,
+            patches=patches,
         )
         out = result.output
         out_key = None
@@ -215,14 +221,19 @@ async def handle(
             except (OriginalCleanupError, RedisConnectionError, RedisTimeoutError):
                 raise
             except Exception as error:
-                # AIServiceError 메시지에는 키·원문이 없다. 다른 예외는 이름만 남긴다.
-                reason = f": {error}" if isinstance(error, AIServiceError) else ""
+                # AIServiceError·PolicyViolation 메시지에는 키·원문이 없다. 다른 예외는 이름만.
+                safe = isinstance(error, (AIServiceError, PolicyViolation))
+                reason = f": {error}" if safe else ""
                 logger.warning("job %s failed (%s%s)", msg.job_id, type(error).__name__, reason)
                 result = ResultMessage(
                     job_id=msg.job_id,
                     execution_id=msg.execution_id,
                     status="FAILED",
-                    error="처리하지 못했습니다. 원본 파일을 다시 업로드해 주세요",
+                    error=(
+                        str(error)
+                        if isinstance(error, PolicyViolation)
+                        else "처리하지 못했습니다. 원본 파일을 다시 업로드해 주세요"
+                    ),
                 )
             await redis.setex(
                 f"{key}:result", settings.progress_ttl_seconds, result.model_dump_json()

@@ -1,16 +1,23 @@
-"""⓪ 맥락 → ① 탐지 → ② 위험 분석 → ③ 변환 → ④ 재검증 (위험이 남으면 최대 max_iterations 회 반복).
+"""⓪ 맥락 → ① 탐지 → ② 위험 분석 → ③ 정책(에이전트3) → 사용자 선택 → ③ 변환 → ④ 재검증.
 
+(사용자 선택이 없으면 위험이 남는 동안 최대 max_iterations 회 반복한다.)
 ② 와 ④ 는 같은 코드(stages.risk.find_and_judge / analyze / assess)를 쓴다.
+③ 에이전트3은 두 곳에서 일한다. Phase 1 끝과 ④ 결과에서 findings 에 편집 분류·추천·정책을 붙여
+프론트에 보여 주고(stages/protect.py), Phase 2 에서 사용자가 고른 편집을 정책으로 검사한 뒤 최종
+픽셀을 그린다(stages/transform.py). 이미지재생성 패치는 API 가 만들어 Redis 에 둔 것을 합성한다.
 
 단계가 바뀔 때마다 report 로 진행 상태를 알리면 프론트 진행 표시에 그대로 나온다.
 """
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from stages import risk
 from stages.context import build_context
+from stages.images import open_image
+from stages.protect import apply_policy, check_choice
 from stages.transform import transform
 from stages.types import Assessment, Media
 from stages.verify import verify
@@ -36,22 +43,54 @@ class PipelineResult:
 Findings = list[dict[str, Any]]
 
 
-def _apply_user_choices(assessment: Assessment, choices: list[UserChoice]) -> Assessment:
-    """사용자 선택으로 findings의 action 필드를 덮어쓴다."""
+def _apply_user_choices(
+    assessment: Assessment, choices: list[UserChoice], image_size: tuple[int, int] | None = None
+) -> Assessment:
+    """사용자 선택(처리 방법·조절한 영역·부분마스킹·생성 패치)을 findings 에 반영한다.
+
+    에이전트3 정책(policy)보다 약한 편집은 PolicyViolation 으로 거절한다. 백엔드가 같은 규칙으로
+    422 를 돌려주지만, 큐에 직접 넣는 클라이언트도 있으므로 워커가 다시 검사한다.
+    """
     findings: list[dict[str, Any]] = list(assessment.findings)
     seen = set()
     for choice in choices:
-        if (
-            choice.idx in seen
-            or not 0 <= choice.idx < len(findings)
-            or choice.action not in {"blur", "mask", "remove", "skip"}
-        ):
+        if choice.idx in seen or not 0 <= choice.idx < len(findings):
             raise ValueError("invalid user choice")
         seen.add(choice.idx)
-        findings[choice.idx] = {**findings[choice.idx], "action": choice.action}
+        finding = findings[choice.idx]
+        check_choice(
+            finding,
+            choice.action,
+            bbox=choice.bbox,
+            mask_box=choice.mask_box,
+            generation_id=choice.generation_id,
+            image_size=image_size,
+        )
+        updated = {**finding, "action": choice.action}
+        if choice.bbox is not None and finding.get("bbox") is not None:
+            updated["bbox"] = [float(v) for v in choice.bbox]
+        if choice.mask_box is not None:
+            updated["mask_box"] = [float(v) for v in choice.mask_box]
+        if choice.generation_id:
+            updated["generation_id"] = choice.generation_id
+        findings[choice.idx] = updated
     return Assessment(
         risky=assessment.risky, risk=assessment.risk, findings=findings, combos=assessment.combos
     )
+
+
+def _with_policy(assessment: Assessment) -> Assessment:
+    """③ 에이전트3 정책을 붙인 결과. 리포트(프론트)로 나가는 findings 는 항상 이 형태다."""
+    return Assessment(
+        risky=assessment.risky,
+        risk=assessment.risk,
+        findings=apply_policy(assessment.findings),
+        combos=assessment.combos,
+    )
+
+
+def _image_size(media: Media) -> tuple[int, int] | None:
+    return open_image(media.image).size if media.image is not None else None
 
 
 async def run_detection_phase(
@@ -75,7 +114,7 @@ async def run_detection_phase(
         media.image = None
 
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
-    before = await risk.analyze(media, findings, combos, context)
+    before = _with_policy(await risk.analyze(media, findings, combos, context))
 
     return DetectionResult(before=before)
 
@@ -89,6 +128,7 @@ async def run_pipeline(
     initial_findings: list[dict[str, Any]] | None = None,
     resume_output: Media | None = None,
     on_transformed: Callable[[Media], Awaitable[None]] | None = None,
+    patches: dict[str, bytes] | None = None,
 ) -> PipelineResult:
     """Phase 2: 최초 탐지 결과에 사용자 선택을 반영해 변환하고 한 번 재검증한다."""
     context = await build_context()
@@ -103,10 +143,13 @@ async def run_pipeline(
 
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
     before = await risk.analyze(media, findings, combos, context)
+    if user_choices is None:
+        before = _with_policy(before)
 
-    # 사용자가 선택한 action으로 findings 덮어쓰기
+    # 사용자가 선택한 처리·영역으로 findings 덮어쓰기 (정책 위반은 여기서 거절)
     if user_choices:
-        before = _apply_user_choices(before, user_choices)
+        size = await asyncio.to_thread(_image_size, media) if resume_output is None else None
+        before = _apply_user_choices(before, user_choices, size)
 
     current, after, iterations = media, before, 0
     verification = None
@@ -115,7 +158,9 @@ async def run_pipeline(
     ) and iterations < max_iterations:
         iterations += 1
         await report(JobStatus.TRANSFORMING, iteration=iterations, message="보호 처리 중")
-        current = resume_output if resume_output is not None else await transform(current, after)
+        current = (
+            resume_output if resume_output is not None else await transform(current, after, patches)
+        )
         resume_output = None
         if on_transformed is not None:
             await on_transformed(current)
@@ -123,6 +168,7 @@ async def run_pipeline(
 
         await report(JobStatus.VERIFYING, iteration=iterations, message="재검증 중")
         after, verification = await verify(current, context, before)
+        after = _with_policy(after)
 
         # 사용자가 남겨둔 단서를 자동 반복으로 다시 덮어쓰지 않는다.
         if user_choices is not None:
