@@ -11,6 +11,13 @@ findings 항목에 추가하는 필드 (프론트 flow.ts 가 읽는 이름 그�
     allowed_actions: 이 영역에 실제로 적용할 수 있는 action
     anchor_bbox:     최초 탐지 좌표. locked/high 는 이 안쪽으로 줄일 수 없다
     allow_shrink / allow_delete / allow_partial: 축소·× 삭제(skip)·부분마스킹 허용 여부
+    regenerate_candidate: 재생성 후보(G_i) 여부. 후보만 allowed_actions 에 regenerate 가 있다
+
+재생성 후보 G_i = 1[ t_i ∈ T_gen ∧ L_i ≥ medium ∧ L_i ≠ locked ∧ Q_i ]
+- T_gen: 간판·상호(전체 허용)와 학교·아파트·정류장·위치 단서(조건부). 얼굴·번호판·PII 는 제외
+- Q_i:   영역 품질. bbox 가 사진 안에 있고, 짧은 변 ≥ REGEN_MIN_SIDE_PX,
+         면적 ≤ 사진의 REGEN_MAX_AREA_RATIO (조건부 type 은 REGEN_MAX_AREA_RATIO_CONDITIONAL)
+후보여도 추천(action)은 그대로 가림이다. 기준값은 초기 설계값이라 평가하면서 조정한다.
 
 프론트는 도구 목록·크기 조절 규칙을 코드에 고정하고 있으므로(flow.ts ALLOWED_ACTIONS, 12px 축소,
 × 삭제) 정책 위반은 UI 에서 막히지 않는다. 그래서 서버가 거절(422 + 메시지)한다.
@@ -24,10 +31,11 @@ from stages.risk import RULE_FLOOR_TYPES, RULE_FLOOR_WATCH
 POLICY_VERSION = "agent3.policy.v1"
 
 # 프론트 flow.ts ALLOWED_ACTIONS + 이미지재생성(사진 아래 패널, 모든 유형에서 사용 가능)
+# regenerate 는 재생성 후보(G_i)에만 policy_for 가 붙인다.
 UI_ACTIONS: dict[str, list[str]] = {
-    "text": ["mask", "blur", "partialMask", "remove", "regenerate"],
-    "object": ["mask", "blur", "mosaic", "regenerate"],
-    "location": ["mask", "regenerate"],
+    "text": ["mask", "blur", "partialMask", "remove"],
+    "object": ["mask", "blur", "mosaic"],
+    "location": ["mask"],
 }
 IMAGE_ACTIONS = {"mask", "blur", "mosaic", "partialMask", "remove", "regenerate", "skip"}
 TEXT_ACTIONS = {"mask", "remove", "skip"}
@@ -52,7 +60,14 @@ TEXT_TYPES = {
 }
 # 간판·표지는 글자가 있어도 "간접 위치 단서"로 둔다 (가림 + 이미지재생성 패널).
 # 텍스트 도구를 주고 싶으면 이 집합을 TEXT_TYPES 로 옮긴다.
-SIGN_TYPES = {"store_name", "school_sign", "bus_stop", "pharmacy_name"}
+SIGN_TYPES = {
+    "store_name",
+    "building_sign",
+    "pharmacy_name",
+    "school_sign",
+    "apt_sign",
+    "bus_stop",
+}
 OBJECT_TYPES = {"face", "license_plate", "delivery_label", "id_card"}
 # 부분 노출만으로도 식별되는 것: 전체 불투명 가림만 허용
 LOCKED_TYPES = RULE_FLOOR_TYPES | {"account_number", "card_number"}
@@ -64,6 +79,65 @@ ALWAYS_MASK_TYPES = LOCKED_TYPES | {
     "address",
     "tracking_number",
 }
+
+
+# ---------------------------------------------------------------- 재생성 후보 (G_i)
+# 초기 설계값. 평가(재생성 품질·④ 재검증)를 보면서 조정한다.
+REGEN_MIN_LEVEL = "medium"  # L_i ≥ medium (locked 는 제외)
+REGEN_MIN_SIDE_PX = 16  # bbox 짧은 변 최소 길이(px)
+REGEN_MAX_AREA_RATIO = 0.40  # bbox 면적 / 사진 면적 상한
+REGEN_MAX_AREA_RATIO_CONDITIONAL = 0.25  # 조건부 type 의 상한
+
+# 간판(vlm, 간판 전체 box)·상호(ocr, 글자 box). 같은 type 이 source 로 구분된다.
+REGEN_TYPES = {"store_name", "building_sign", "pharmacy_name"}
+REGEN_SOURCES = {"vlm", "ocr"}
+# 조건부: 학교·아파트 표지, 정류장, 위치 단서(other + risk_category=location)
+REGEN_CONDITIONAL_TYPES = {"school_sign", "apt_sign", "bus_stop"}
+REGEN_CONDITIONAL_LOCATION_TYPES = {"other"}
+_LEVEL_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def regen_class(finding: dict[str, Any]) -> str | None:
+    """t_i ∈ T_gen 이면 "full" 또는 "conditional", 아니면 None."""
+    type_ = finding.get("type", "")
+    if type_ in REGEN_TYPES and finding.get("source") in REGEN_SOURCES:
+        return "full"
+    if type_ in REGEN_CONDITIONAL_TYPES:
+        return "conditional"
+    risk_category = finding.get("risk_category") or finding.get("category")
+    if type_ in REGEN_CONDITIONAL_LOCATION_TYPES and risk_category == "location":
+        return "conditional"
+    return None
+
+
+def region_ok(bbox: Any, image_size: tuple[int, int] | None, max_area_ratio: float) -> bool:
+    """Q_i: 사진 안의 bbox, 짧은 변 ≥ REGEN_MIN_SIDE_PX, 면적 ≤ max_area_ratio."""
+    box = _box(bbox)
+    if box is None or image_size is None:
+        return False
+    w, h = image_size
+    if w <= 0 or h <= 0:
+        return False
+    x1, y1, x2, y2 = box
+    if not (0 <= x1 < x2 <= w and 0 <= y1 < y2 <= h):
+        return False
+    bw, bh = x2 - x1, y2 - y1
+    if min(bw, bh) < REGEN_MIN_SIDE_PX:
+        return False
+    return bw * bh <= max_area_ratio * w * h
+
+
+def is_regen_candidate(
+    finding: dict[str, Any], level: str, image_size: tuple[int, int] | None
+) -> bool:
+    """G_i = 1[ t_i ∈ T_gen ∧ L_i ≥ medium ∧ L_i ≠ locked ∧ Q_i ]. 사진 크기 모르면 0."""
+    kind = regen_class(finding)
+    if kind is None or level == "locked":
+        return False
+    if _LEVEL_RANK.get(level, -1) < _LEVEL_RANK[REGEN_MIN_LEVEL]:
+        return False
+    ratio = REGEN_MAX_AREA_RATIO if kind == "full" else REGEN_MAX_AREA_RATIO_CONDITIONAL
+    return region_ok(finding.get("bbox"), image_size, ratio)
 
 
 def ui_category(finding: dict[str, Any]) -> str:
@@ -101,11 +175,19 @@ def recommend(finding: dict[str, Any], category: str, level: str) -> str:
     return "blur"  # text, medium/low
 
 
-def policy_for(finding: dict[str, Any], category: str, level: str) -> dict[str, Any]:
+def policy_for(
+    finding: dict[str, Any],
+    category: str,
+    level: str,
+    image_size: tuple[int, int] | None = None,
+) -> dict[str, Any]:
     strict = level in {"locked", "high"}
     allowed = ["mask"] if level == "locked" else list(UI_ACTIONS[category])
     if strict and "partialMask" in allowed:
         allowed.remove("partialMask")
+    candidate = is_regen_candidate(finding, level, image_size)
+    if candidate:
+        allowed.append("regenerate")
     return {
         "version": POLICY_VERSION,
         "level": level,
@@ -114,11 +196,17 @@ def policy_for(finding: dict[str, Any], category: str, level: str) -> dict[str, 
         "allow_shrink": not strict,
         "allow_delete": not strict,
         "allow_partial": not strict,
+        "regenerate_candidate": candidate,
     }
 
 
-def apply_policy(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """리포트로 나가는 findings 에 category(UI)·action·policy 를 붙인다. 입력은 바꾸지 않는다."""
+def apply_policy(
+    findings: list[dict[str, Any]], image_size: tuple[int, int] | None = None
+) -> list[dict[str, Any]]:
+    """리포트로 나가는 findings 에 category(UI)·action·policy 를 붙인다. 입력은 바꾸지 않는다.
+
+    image_size(가로, 세로 px)는 재생성 후보의 영역 품질(Q_i) 검사에 쓴다. 없으면 재생성 후보가 없다.
+    """
     out = []
     for f in findings:
         f = dict(f)
@@ -133,7 +221,7 @@ def apply_policy(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         level = protection_level(f)
         f["category"] = category
         f["action"] = recommend(f, category, level) if f.get("source") != "text" else "mask"
-        f["policy"] = policy_for(f, category, level)
+        f["policy"] = policy_for(f, category, level, image_size)
         out.append(f)
     return out
 

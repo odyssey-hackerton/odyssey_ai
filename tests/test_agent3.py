@@ -21,6 +21,7 @@ from worker.main import process
 from worker.pipeline import _apply_user_choices, run_pipeline
 
 GREEN, RED = (0, 255, 0), (255, 0, 0)
+SIZE = (100, 80)  # photo() 크기
 
 
 def photo() -> bytes:
@@ -79,9 +80,9 @@ def test_locked_types_only_allow_full_mask_and_high_risk_keeps_anchor():
     [rrn] = apply_policy([finding(type="rrn", source="ocr")])
     assert rrn["policy"]["level"] == "locked"
     assert rrn["policy"]["allowed_actions"] == ["mask"]
-    [face] = apply_policy([finding()])
+    [face] = apply_policy([finding()], SIZE)
     assert face["policy"]["level"] == "high"
-    assert face["policy"]["allowed_actions"] == ["mask", "blur", "mosaic", "regenerate"]
+    assert face["policy"]["allowed_actions"] == ["mask", "blur", "mosaic"]  # 얼굴은 재생성 제외
     assert not face["policy"]["allow_shrink"] and not face["policy"]["allow_delete"]
     [low] = apply_policy([finding(type="other", category="lifestyle", risk_level="low")])
     assert low["policy"]["allow_shrink"] and low["policy"]["allow_delete"]
@@ -95,7 +96,12 @@ def test_locked_types_only_allow_full_mask_and_high_risk_keeps_anchor():
         ({}, {"action": "skip"}, "그대로 둘 수 없어요"),
         ({}, {"action": "partialMask", "mask_box": [0, 0, 0.5, 1]}, "부분마스킹"),
         ({}, {"action": "mask", "bbox": [25, 22, 60, 40]}, "작게 줄일 수 없어요"),
-        ({}, {"action": "regenerate", "bbox": [20, 20, 60, 40]}, "먼저 생성"),
+        ({}, {"action": "regenerate", "bbox": [20, 20, 60, 40]}, "쓸 수 없어요"),
+        (
+            {"type": "store_name", "category": "location", "risk_level": "medium"},
+            {"action": "regenerate", "bbox": [20, 20, 60, 40]},
+            "먼저 생성",
+        ),
         ({}, {"action": "mask", "bbox": [0, 0, 200, 40]}, "사진 범위"),
         ({"type": "name", "risk_level": "low"}, {"action": "partialMask"}, "범위를 사진에서"),
         (
@@ -107,7 +113,7 @@ def test_locked_types_only_allow_full_mask_and_high_risk_keeps_anchor():
     ],
 )
 def test_weaker_than_policy_edits_are_rejected_with_user_message(changes, choice, message):
-    [f] = apply_policy([finding(**changes)])
+    [f] = apply_policy([finding(**changes)], SIZE)
     with pytest.raises(PolicyViolation, match=message):
         check_choice(f, image_size=(100, 80), **choice)
 
@@ -119,13 +125,107 @@ def test_allowed_edits_pass_including_expansion_and_low_risk_shrink():
     [low] = apply_policy([finding(type="other", category="lifestyle", risk_level="low")])
     check_choice(low, "skip")
     check_choice(low, "mosaic", bbox=[30, 25, 50, 35], image_size=(100, 80))
-    [sign] = apply_policy([finding(type="store_name", category="location", risk_level="medium")])
+    [sign] = apply_policy(
+        [finding(type="store_name", category="location", risk_level="medium")], SIZE
+    )
     check_choice(
         sign, "regenerate", bbox=[20, 20, 60, 40], generation_id="abc", image_size=(100, 80)
     )
     [caption] = apply_policy([finding(source="text", spans=[[0, 3]], bbox=None)])
     check_choice(caption, "skip")
     check_choice(caption, "remove")
+
+
+# ---------------------------------------------------------------- 재생성 후보 (G_i)
+def regen(image_size=SIZE, **changes):
+    [out] = apply_policy([finding(**changes)], image_size)
+    return out
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"type": "store_name", "source": "vlm"},  # SIGNBOARD: 간판 전체 box
+        {"type": "building_sign", "source": "vlm"},
+        {"type": "pharmacy_name", "source": "vlm"},
+        {"type": "store_name", "source": "ocr"},  # SHOP_NAME: 글자 box
+        {"type": "pharmacy_name", "source": "ocr", "risk_level": "high"},
+        {"type": "school_sign"},  # 조건부
+        {"type": "apt_sign"},
+        {"type": "bus_stop"},
+        {"type": "other", "category": "location"},
+    ],
+)
+def test_regen_candidates_get_regenerate_but_still_default_to_mask(changes):
+    changes = {"risk_level": "medium"} | changes
+    out = regen(**changes)
+    assert out["policy"]["regenerate_candidate"] is True
+    assert "regenerate" in out["policy"]["allowed_actions"]
+    # 후보여도 추천 보호는 바뀌지 않는다 (간판은 가림)
+    assert out["action"] == regen(None, **changes)["action"]
+    if changes.get("source", "vlm") == "vlm":
+        assert out["action"] == "mask"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"type": "face", "risk_level": "medium"},  # FACE 제외
+        {"type": "license_plate"},
+        {"type": "rrn", "source": "ocr"},
+        {"type": "account_number", "source": "ocr"},
+        {"type": "id_card"},
+        {"type": "delivery_label"},
+        {"type": "tracking_number", "source": "ocr"},
+        {"type": "other", "category": "lifestyle", "risk_level": "medium"},  # 위치 단서 아님
+        {"type": "store_name", "source": "text", "spans": [[0, 3]], "bbox": None},  # 캡션
+        {"type": "store_name", "risk_level": "low"},  # L_i < medium
+        {"type": "school_sign", "watch_item": "military"},  # locked
+    ],
+)
+def test_non_candidates_never_get_regenerate(changes, monkeypatch):
+    monkeypatch.setattr(protect, "RULE_FLOOR_WATCH", {"military"})
+    out = regen(**changes)
+    assert not out["policy"].get("regenerate_candidate")
+    assert "regenerate" not in out["policy"].get("allowed_actions", [])
+
+
+@pytest.mark.parametrize(
+    ("bbox", "image_size", "ok"),
+    [
+        ([10, 10, 26, 26], (100, 100), True),  # 짧은 변 16px 경계
+        ([10, 10, 25, 40], (100, 100), False),  # 짧은 변 15px
+        ([0, 0, 40, 100], (100, 100), True),  # 면적 40% 경계
+        ([0, 0, 41, 100], (100, 100), False),  # 41%
+        ([-1, 10, 30, 40], (100, 100), False),  # 사진 밖
+        ([80, 10, 101, 40], (100, 100), False),
+        ([30, 30, 20, 40], (100, 100), False),  # 뒤집힌 좌표
+        ([10, 10, 40, 40], None, False),  # 사진 크기 모름
+        (None, (100, 100), False),
+    ],
+)
+def test_region_quality_q_i(bbox, image_size, ok):
+    out = regen(image_size, type="store_name", risk_level="medium", bbox=bbox)
+    assert out["policy"]["regenerate_candidate"] is ok
+
+
+def test_conditional_types_use_smaller_area_limit():
+    box_30pct = [0, 0, 30, 100]
+    assert regen((100, 100), type="store_name", bbox=box_30pct)["policy"]["regenerate_candidate"]
+    for changes in ({"type": "school_sign"}, {"type": "other", "category": "location"}):
+        out = regen((100, 100), bbox=box_30pct, risk_level="medium", **changes)
+        assert out["policy"]["regenerate_candidate"] is False
+    out = regen((100, 100), type="bus_stop", bbox=[0, 0, 25, 100], risk_level="medium")
+    assert out["policy"]["regenerate_candidate"] is True  # 25% 경계
+
+
+def test_regen_thresholds_are_tunable(monkeypatch):
+    monkeypatch.setattr(protect, "REGEN_MIN_SIDE_PX", 32)
+    assert not regen(type="store_name", bbox=[20, 20, 60, 40])["policy"]["regenerate_candidate"]
+    monkeypatch.setattr(protect, "REGEN_MIN_SIDE_PX", 16)
+    monkeypatch.setattr(protect, "REGEN_MIN_LEVEL", "high")
+    assert not regen(type="store_name", risk_level="medium")["policy"]["regenerate_candidate"]
+    assert regen(type="store_name", risk_level="high")["policy"]["regenerate_candidate"]
 
 
 # ---------------------------------------------------------------- 렌더

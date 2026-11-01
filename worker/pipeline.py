@@ -79,18 +79,23 @@ def _apply_user_choices(
     )
 
 
-def _with_policy(assessment: Assessment) -> Assessment:
+def _with_policy(assessment: Assessment, image_size: tuple[int, int] | None = None) -> Assessment:
     """③ 에이전트3 정책을 붙인 결과. 리포트(프론트)로 나가는 findings 는 항상 이 형태다."""
     return Assessment(
         risky=assessment.risky,
         risk=assessment.risk,
-        findings=apply_policy(assessment.findings),
+        findings=apply_policy(assessment.findings, image_size),
         combos=assessment.combos,
     )
 
 
 def _image_size(media: Media) -> tuple[int, int] | None:
-    return open_image(media.image).size if media.image is not None else None
+    if media.image is None:
+        return None
+    try:
+        return open_image(media.image).size
+    except Exception:  # 읽을 수 없으면 크기 없이 진행 (재생성 후보 없음)
+        return None
 
 
 async def run_detection_phase(
@@ -104,6 +109,8 @@ async def run_detection_phase(
     """Phase 1: 탐지·분석만 실행하고 결과를 반환한다. 변환은 하지 않는다."""
     await report(JobStatus.DETECTING, message="개인정보 탐지 중")
     context = await build_context()  # ⓪ 하루 캐시. 실패하지 않는다 (최악이면 고정 규칙만)
+    # 재생성 후보 영역 검사(Q_i)에 쓴다. 원본을 지우기 전에 크기를 잡아 둔다.
+    size = await asyncio.to_thread(_image_size, media)
     if initial_findings is not None:
         findings, combos = initial_findings, initial_combos or []
     else:
@@ -114,7 +121,7 @@ async def run_detection_phase(
         media.image = None
 
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
-    before = _with_policy(await risk.analyze(media, findings, combos, context))
+    before = _with_policy(await risk.analyze(media, findings, combos, context), size)
 
     return DetectionResult(before=before)
 
@@ -144,7 +151,7 @@ async def run_pipeline(
     await report(JobStatus.ANALYZING, message="위험도 분석 중")
     before = await risk.analyze(media, findings, combos, context)
     if user_choices is None:
-        before = _with_policy(before)
+        before = _with_policy(before, await asyncio.to_thread(_image_size, media))
 
     # 사용자가 선택한 처리·영역으로 findings 덮어쓰기 (정책 위반은 여기서 거절)
     if user_choices:
