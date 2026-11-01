@@ -1,6 +1,6 @@
 # odyssey_ai
 
-GPU 서버에서 도는 AI 워커입니다. 일반 서버의 Redis에서 작업을 가져와 ① 탐지 → ② 위험 분석 → ③ 변환 → ② 재검증(최대 3회)을 거쳐 결과를 돌려보냅니다. 협업 규칙은 [CONTRIBUTING.md](CONTRIBUTING.md)를 보세요.
+GPU 서버에서 도는 AI 워커입니다. 일반 서버의 Redis에서 작업을 가져와 ① 탐지 → ② 위험 분석 → ③ 보호 정책(에이전트3) → 사용자 선택 → ③ 변환 → ② 재검증을 거쳐 결과를 돌려보냅니다. 협업 규칙은 [CONTRIBUTING.md](CONTRIBUTING.md)를 보세요.
 
 합성 자료 테스트용으로 **Gemini 사진·본문 탐지와 재검증**을 연결했습니다. 최초 분석은 `AWAITING_USER`로 반환하고, 사용자가 선택하면 서버에서 실제 픽셀 가림·블러·본문 삭제 후 한 번 재검증합니다. 남은 단서는 사용자에게 보여줍니다. 생성형 지우기·간판 교체는 미구현이며 사진 `remove`는 단색 가림입니다.
 
@@ -22,14 +22,15 @@ API ◀──────── Redis results ◀──XADD──── worker.m
 stages/          ← AI 팀 작업 영역
   detect.py      ① 탐지 (PaddleOCR, 얼굴, EXIF, 글)
   risk.py        ② 위험 분석·재검증
-  transform.py   ③ 변환 (블러, 마스킹, EXIF 제거)
+  protect.py     ③ 에이전트3 정책: 편집 도구 분류(category)·추천 action·policy, 사용자 편집 검사
+  transform.py   ③ 에이전트3 렌더: 가림·블러·모자이크·부분마스킹·텍스트제거(인페인팅)·생성 패치 합성, EXIF 제거
   types.py       Media(사진·글), Assessment(위험도·탐지 항목)
 worker/
   main.py        작업 받기 → 처리 → 결과 보내기 (수정할 일 거의 없음)
   pipeline.py    단계 순서와 반복 규칙
   contract.py    백엔드와 주고받는 메시지 형식 (백엔드와 같게 유지)
   check.py       통신 확인 (Redis, S3)
-  queue.py       Redis 연결·진행 상태·결과 전송
+  queue.py       Redis 연결·진행 상태·결과 전송, 이미지재생성 패치 읽기
   storage.py     S3 읽기·쓰기
 ```
 
@@ -47,6 +48,14 @@ worker/
 2. 탐지 항목(`findings`)은 `type`, `source`, `bbox`, `score`, `action` 키를 쓰고, 필요하면 다른 키를 더 넣어도 됩니다. 백엔드가 그대로 저장해서 리포트에 보여줍니다.
 3. 모델 라이브러리를 추가했으면 `uv add <패키지>`로 `pyproject.toml`과 `uv.lock`을 함께 갱신합니다.
 4. GPU를 쓰게 되면 `Dockerfile`의 베이스 이미지를 CUDA 이미지로 바꾸고, 실행할 때 `--gpus all`을 붙입니다.
+
+## ③ 보호 편집 (에이전트3)
+
+프론트 편집 화면은 그대로이고, 변환 도구가 워커 안으로 들어왔다.
+
+- **Phase 1 끝(`AWAITING_USER`)**: `stages/protect.py` 가 findings 마다 `category`(`text`|`object`|`location`, 프론트 도구 분류), 추천 `action`, `policy`(level·허용 action·최초 영역·축소/삭제/부분마스킹 가능 여부)를 붙인다. ② 의 8분류는 `risk_category` 로 보존한다. `rrn`·`id_card`·`account_number`·`card_number`·`delivery_label`·`apt_dong_ho` 는 `locked`(전체 가림만), `risk_level=high` 는 축소·× 삭제·부분마스킹 불가.
+- **Phase 2**: `user_choices[]` 에 `action`(mask/blur/mosaic/partialMask/remove/regenerate/skip)·`bbox`·`mask_box`·`generation_id` 가 온다. 정책보다 약한 선택은 `PolicyViolation` 으로 작업을 `FAILED` 처리하고 메시지를 그대로 돌려준다(백엔드가 같은 규칙으로 먼저 422 를 낸다). `stages/transform.py` 가 프론트 미리보기(`media.ts`)와 같은 규칙으로 최종 픽셀을 그린다: 16px 고정 강도, 단색 `(20,33,56)`, 부분마스킹은 영역 안 상대 좌표, 텍스트제거는 OpenCV Telea 인페인팅(24px 패딩·512px 상한), 복원형(remove/regenerate)을 먼저 그려 불투명 보호를 덮지 못하게 한다.
+- **이미지재생성**: Gemini 호출은 그대로 백엔드 `POST /api/images/regenerate` 가 한다. 백엔드가 결과 패치를 Redis `generation:{id}` 에 24시간 보관하고, 사용자가 적용하면 `generation_id` 가 Phase 2 로 와서 `worker/queue.py load_patches` 가 읽어 같은 픽셀을 합성한다. 만료됐으면 그 영역은 가림으로 대체한다.
 
 ## ① 탐지 모델 (에이전트1)
 

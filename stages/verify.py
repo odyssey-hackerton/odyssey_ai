@@ -26,7 +26,13 @@ from stages.types import Assessment, Media
 Findings = list[dict[str, Any]]
 
 # 아직 남았을 때 추천하는 더 센 처리
-STRONGER = {"blur": "mask", "mask": "remove"}
+STRONGER = {
+    "blur": "mask",
+    "mosaic": "mask",
+    "partialMask": "mask",
+    "regenerate": "mask",
+    "mask": "remove",
+}
 
 
 def _same(before: dict[str, Any], after: dict[str, Any]) -> bool:

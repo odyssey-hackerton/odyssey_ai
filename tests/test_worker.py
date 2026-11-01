@@ -130,7 +130,7 @@ async def test_pipeline_loops_until_safe(monkeypatch):
         risky = calls["analyze"] < 3  # 처음 분석 + 1회차 재검증은 위험, 2회차에 안전
         return Assessment(risky=risky, risk=0.8 if risky else 0.1, findings=findings)
 
-    async def fake_transform(media, assessment):
+    async def fake_transform(media, assessment, patches=None):
         return Media(text="masked")
 
     monkeypatch.setattr(risk, "detect", fake_detect)

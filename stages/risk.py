@@ -200,7 +200,15 @@ def _where(finding: dict[str, Any], size: tuple[int, int] | None) -> str:
 
 # 같은 객체로 볼 박스 겹침. PASCAL VOC·COCO 의 기본 매칭 기준 0.5. ④ 재검증도 이 값을 쓴다.
 IOU_MATCH = 0.5
-EDIT_LABELS = {"blur": "블러", "mask": "덮기", "remove": "지우기"}
+EDIT_LABELS = {
+    "blur": "블러",
+    "mask": "덮기",
+    "remove": "지우기",
+    # ③ 에이전트3 편집 화면의 추가 처리 (stages/transform.py)
+    "mosaic": "모자이크",
+    "partialMask": "부분 덮기",
+    "regenerate": "배경 재생성",
+}
 
 
 def iou(a: list[float], b: list[float]) -> float:
