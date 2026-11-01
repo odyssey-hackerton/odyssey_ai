@@ -149,6 +149,39 @@ S1 = {
     },
     "required": ["items", "missed"],
 }
+J3 = f"""너는 사진 프라이버시 평가 채점관이다. 사진 1은 원본, 사진 2는 보호 처리를 거친 사진이다. 다른 시스템의 결과는 주지 않는다.
+1) clues: 사진 1(원본)을 처음 보는 낯선 사람이 알아낼 수 있는 의미 있는 개인 정보 단서를 모두 적는다.
+   각 단서마다 category ({CATS}), severity ({SEVERITY}),
+   visible_after: 사진 2에서도 그 단서를 알아볼 수 있으면 true.
+2) introduced: 사진 1에는 없고 사진 2에서 처리 때문에 새로 생긴 단서 (없으면 빈 목록).
+사진에 보이는 것만 근거로 한다."""
+S3 = {
+    "type": "object",
+    "properties": {
+        "clues": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "category": {"type": "string"},
+                    "severity": {"type": "integer"},
+                    "visible_after": {"type": "boolean"},
+                },
+                "required": ["title", "category", "severity", "visible_after"],
+            },
+        },
+        "introduced": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"title": {"type": "string"}, "severity": {"type": "integer"}},
+                "required": ["title", "severity"],
+            },
+        },
+    },
+    "required": ["clues", "introduced"],
+}
 S2 = {
     "type": "object",
     "properties": {
@@ -295,6 +328,10 @@ async def run_one(path):
                 J2,
                 S2,
             )
+            # 우리 결과 없이 원본 vs ③ 변환 후 사진만 보고 독립 채점
+            rec["judge3"] = await ask_judge(
+                [raw, res.output.image], "사진 1 = 원본, 사진 2 = 처리 후.", J3, S3
+            )
     rec["sec"] = round(time.monotonic() - t, 1)
     return rec
 
@@ -376,6 +413,7 @@ def score(recs):
     s_ours, s_judge, risk, errors = [], [], [], 0
     before_n = still = 0
     clues_before = clues_after = introduced = 0
+    b_n = b_after = b_intro = b_sev = b_sev_after = b_hi = b_hi_after = 0
     secs = []
     for r in recs:
         if "error" in r or "judge1" not in r:
@@ -405,6 +443,19 @@ def score(recs):
             items = r["judge2"].get("items", [])
             before_n += len(byid)
             still += sum(bool(i.get("still_visible")) for i in items if i.get("id") in byid)
+            j3 = r.get("judge3") or {}
+            for c in j3.get("clues", []):
+                sev = clamp(c.get("severity"))
+                after = bool(c.get("visible_after"))
+                b_n += 1
+                b_after += after
+                b_sev += sev
+                b_sev_after += sev * after
+                b_hi += sev >= 3
+                b_hi_after += sev >= 3 and after
+            for c in j3.get("introduced", []):
+                b_intro += 1
+                b_sev_after += clamp(c.get("severity"))
             rem = r["judge2"].get("remaining", [])
             introduced += sum(bool(x.get("introduced_by_edit")) for x in rem)
             j1 = r["judge1"]
@@ -432,6 +483,12 @@ def score(recs):
         "④ 채점관이 본 단서 수 처리 전 → 후": f"{clues_before} → {clues_after}",
         "④ 단서 감소율 (전후 비교)": pct(clues_before - clues_after, clues_before),
         "④ 처리 때문에 새로 생긴 단서": introduced,
+        "독립 채점: 원본 단서 → 처리 후 남은 단서": f"{b_n} → {b_after + b_intro}",
+        "독립 채점: 단서 감소율": pct(b_n - b_after - b_intro, b_n),
+        "독립 채점: 심각도 합 처리 전 → 후": f"{b_sev} → {b_sev_after}",
+        "독립 채점: 심각도 합 감소율": pct(b_sev - b_sev_after, b_sev),
+        "독립 채점: 고위험(3 이상) 단서 처리 전 → 후": f"{b_hi} → {b_hi_after}",
+        "독립 채점: 처리 때문에 생긴 단서": b_intro,
         "사진당 평균 시간 (초)": round(statistics.mean(secs), 1) if secs else None,
         "실패": errors,
     }
