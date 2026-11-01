@@ -14,6 +14,12 @@
 - kept      : 사용자가 skip (그대로 둠)
 new_items: 처리 전 객체와 짝이 없고 medium 이상인 재검증 객체 (처음엔 못 찾은 단서)
 
+risk_total: 위험 총량 (객체별 risk_score 합) 처리 전/후 비교
+- before: 처리 전 객체 점수 합 + 재검증에서 새로 찾은 객체 점수 합
+  (새로 찾은 객체도 원본 사진에 원래 있던 것이라 처리 전 위험에 넣는다. 점수는 재검증 판정 값)
+- after : 재검증에서 찾은 객체 전부의 점수 합
+- reduction: (before - after) / before. 짝지은 객체 점수가 처리 후 오르지 않는 한 0 이상
+
 message: 화면에 그대로 띄울 한 문장. 모델 호출 없이 상태·처리·② reason 으로 만든다.
 """
 
@@ -117,6 +123,7 @@ def compare(before: Findings, after: Findings) -> dict[str, Any]:
         for s in ("removed", "weakened", "remaining", "kept")
     }
     return {
+        "risk_total": _risk_total(before, after, matched),
         "before": len(before),
         "after": len(after),
         **count,
@@ -126,6 +133,18 @@ def compare(before: Findings, after: Findings) -> dict[str, Any]:
         "items": items,
         "new_items": new_items,
     }
+
+
+def _score(f: dict[str, Any]) -> int:
+    return int(f.get("risk_score") or 0)
+
+
+def _risk_total(before: Findings, after: Findings, matched: set[int]) -> dict[str, Any]:
+    unmatched = sum(_score(a) for i, a in enumerate(after) if i not in matched)
+    total_before = sum(_score(f) for f in before) + unmatched
+    total_after = sum(_score(a) for a in after)
+    reduction = round((total_before - total_after) / total_before, 3) if total_before else None
+    return {"before": total_before, "after": total_after, "reduction": reduction}
 
 
 async def verify(

@@ -85,3 +85,33 @@ async def test_edited_area_is_told_to_judge(monkeypatch):
     )
     assert findings[0]["edited_as"] == "blur"
     assert "이미 블러 처리됐다" in provider.call_args_list[0].args[0][-1]["text"]
+
+
+def test_risk_total_counts_new_items_as_already_there():
+    # 실제 서버 실행 예: 처음 4개 (4, 8, 6, 4) 모두 사라지고, 새로 2개 (4, 8)
+    before = [
+        obj(0, "bus_stop", (0, 0, 10, 10), risk_score=4),
+        obj(1, "other", (20, 0, 30, 10), risk_score=8),
+        obj(2, "other", (40, 0, 50, 10), risk_score=6),
+        obj(3, "store_name", (60, 0, 70, 10), risk_score=4),
+    ]
+    after = [
+        obj(9, "bus_stop", (0, 100, 50, 150), risk_level="medium", risk_score=4),
+        obj(8, "store_name", (200, 100, 250, 150), risk_level="medium", risk_score=8),
+    ]
+    assert verify.compare(before, after)["risk_total"] == {
+        "before": 34,
+        "after": 12,
+        "reduction": 0.647,
+    }
+
+
+def test_risk_total_uses_after_score_for_matched_and_handles_empty():
+    before = [obj(0, "face", risk_score=12), obj(1, bbox=(100, 100, 150, 150), risk_score=4)]
+    after = [obj(9, "face", (11, 11, 51, 51), risk_level="low", risk_score=2)]
+    assert verify.compare(before, after)["risk_total"] == {
+        "before": 16,
+        "after": 2,
+        "reduction": 0.875,
+    }
+    assert verify.compare([], [])["risk_total"] == {"before": 0, "after": 0, "reduction": None}
