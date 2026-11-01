@@ -7,7 +7,8 @@ import pytest
 from PIL import Image
 
 from stages import gemini
-from stages.detect import detect
+from stages.detect import Detection, detect
+from stages.gemini import AIServiceError
 from stages.images import open_image, png_bytes
 from stages.transform import transform
 from stages.types import Assessment, Media
@@ -24,6 +25,7 @@ def candidate(**changes):
             description="연락처 노출",
             risk_level="high",
             score=0.9,
+            category="identity",  # 고정 매핑 type 은 코드가 덮어쓴다
             box_2d=None,
             text="010-0000-0000",
         )
@@ -212,3 +214,116 @@ async def test_transparent_rgb_never_becomes_visible(format):
         ),
     )
     assert open_image(result.image).getpixel((5, 5)) == (255, 255, 255)
+
+
+def test_detection_schema_sent_without_limits_gemini_rejects():
+    sent = json.dumps(gemini.serving_schema(Detection.model_json_schema()))
+    for key in ("maxLength", "minLength", "maxItems", "minimum", "maximum"):
+        assert key not in sent, key
+    assert '"findings"' in sent and '"box_2d"' in sent
+
+
+def test_serving_schema_keeps_property_names():
+    schema = {"properties": {"maximum": {"type": "number", "maximum": 3}}, "maxItems": 2}
+    assert gemini.serving_schema(schema) == {"properties": {"maximum": {"type": "number"}}}
+
+
+async def test_long_findings_are_cut_and_boxes_clamped(monkeypatch):
+    long = candidate(
+        source="image",
+        text=None,
+        title="가" * 200,
+        description="나" * 900,
+        box_2d=[-5, 0, 1004, 500],
+        score=1.2,
+    )
+    monkeypatch.setattr(
+        "stages.detect.generate_json", AsyncMock(return_value={"findings": [long] * 40})
+    )
+    findings = await detect(Media(image=png_bytes(Image.new("RGB", (100, 100)))))
+    assert len(findings) == 30
+    assert len(findings[0]["title"]) == 80 and len(findings[0]["description"]) == 300
+    assert findings[0]["bbox"] == [0, 0, 50, 100] and findings[0]["score"] == 1.0
+
+
+def test_overloaded_model_is_retried_but_not_forever(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "private-test-key")
+    gemini.get_settings.cache_clear()
+    monkeypatch.setattr(gemini.time, "sleep", lambda s: None)
+    calls = []
+
+    class Ok:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, n):
+            return b'{"status": "completed"}'
+
+    def flaky(request, **kwargs):
+        calls.append(request)
+        if len(calls) < 3:
+            raise HTTPError(request.full_url, 503, "busy", {}, None)
+        return Ok()
+
+    def busy(request, **kwargs):
+        calls.append(request)
+        raise HTTPError(request.full_url, 503, "busy", {}, None)
+
+    try:
+        monkeypatch.setattr(gemini, "urlopen", flaky)
+        assert gemini._request({}) == {"status": "completed"} and len(calls) == 3
+        calls.clear()
+        monkeypatch.setattr(gemini, "urlopen", busy)
+        with pytest.raises(gemini.AIServiceError, match="HTTP 503"):
+            gemini._request({})
+        assert len(calls) == 1 + len(gemini.RETRY_DELAYS)
+    finally:
+        gemini.get_settings.cache_clear()
+
+
+async def test_category_mapping_and_watchlist(monkeypatch):
+    image = png_bytes(Image.new("RGB", (100, 80), "white"))
+    provider = AsyncMock(
+        return_value={
+            "findings": [
+                candidate(source="image", text=None, box_2d=[0, 0, 100, 100]),
+                candidate(
+                    type="context_item",
+                    source="image",
+                    text=None,
+                    box_2d=[200, 200, 400, 400],
+                    category="sensitive",
+                    watch_item="선거 홍보물",
+                ),
+                candidate(
+                    type="other",
+                    source="image",
+                    text=None,
+                    box_2d=[500, 500, 900, 900],
+                    category="lifestyle",
+                ),
+            ]
+        }
+    )
+    monkeypatch.setattr("stages.detect.generate_json", provider)
+    watchlist = [{"item": "선거 홍보물", "category": "sensitive", "why": "지지 성향"}]
+    findings = await detect(Media(image=image, image_ext="png"), watchlist=watchlist)
+
+    by_type = {f["type"]: f for f in findings}
+    assert by_type["phone_number"]["category"] == "contact_finance"
+    assert by_type["context_item"]["category"] == "sensitive"
+    assert by_type["context_item"]["watch_item"] == "선거 홍보물"
+    assert by_type["other"]["category"] == "lifestyle"
+    assert all("category" in f for f in findings)  # EXIF 항목 포함
+    prompt = provider.call_args.args[0]
+    assert any("선거 홍보물" in block.get("text", "") for block in prompt)
+
+
+async def test_vlm_category_must_be_known(monkeypatch):
+    provider = AsyncMock(return_value={"findings": [candidate(category="unknown")]})
+    monkeypatch.setattr("stages.detect.generate_json", provider)
+    with pytest.raises(AIServiceError):
+        await detect(Media(text="010-0000-0000"))

@@ -19,11 +19,13 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import ResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from stages.gemini import AIServiceError
+from stages.protect import PolicyViolation
 from stages.types import Media
 from worker.config import Settings, get_settings
 from worker.contract import JobMessage, JobStatus, ResultMessage
 from worker.pipeline import run_detection_phase, run_pipeline
-from worker.queue import create_redis, ensure_group, send_result, set_progress
+from worker.queue import create_redis, ensure_group, load_patches, send_result, set_progress
 from worker.storage import Storage, result_key
 
 logger = logging.getLogger("worker")
@@ -83,12 +85,12 @@ async def process(
 
         if msg.user_choices is None:
 
-            async def detected(findings):
-                # 원본 삭제 전에 복구에 필요한 탐지 결과만 저장한다.
+            async def detected(findings, combos):
+                # 원본 삭제 전에 복구에 필요한 탐지·판정 결과만 저장한다.
                 await redis.setex(
                     checkpoint_key,
                     settings.progress_ttl_seconds,
-                    json.dumps({"stage": "detected", "findings": findings}),
+                    json.dumps({"stage": "detected", "findings": findings, "combos": combos}),
                 )
                 await discard_original(storage, msg.object_key)
 
@@ -97,6 +99,7 @@ async def process(
                 report=report,
                 on_detected=detected,
                 initial_findings=checkpoint["findings"] if checkpoint else None,
+                initial_combos=checkpoint.get("combos") if checkpoint else None,
             )
             return ResultMessage(
                 job_id=msg.job_id,
@@ -105,7 +108,8 @@ async def process(
                 risk_detected=detection.before.risky,
                 risk_before=detection.before.risk,
                 findings=detection.before.findings,
-                details={"worker": settings.worker_name},
+                # 조합 경고 (② 2단계). 객체 findings 와 별개로 보여준다.
+                details={"worker": settings.worker_name, "combos": detection.before.combos},
             )
 
         async def transformed(output: Media):
@@ -123,6 +127,10 @@ async def process(
                 )
             await discard_original(storage, msg.object_key)
 
+        # 편집 화면에서 API 가 만들어 Redis 에 둔 이미지재생성 패치
+        patches = await load_patches(
+            redis, [c.generation_id or "" for c in msg.user_choices if c.action == "regenerate"]
+        )
         resume_output = None
         if checkpoint:
             resume_output = Media(
@@ -142,6 +150,7 @@ async def process(
             ),
             resume_output=resume_output,
             on_transformed=transformed,
+            patches=patches,
         )
         out = result.output
         out_key = None
@@ -164,6 +173,9 @@ async def process(
                 "model": settings.gemini_model,
                 "processed_findings": result.before.findings,
                 "remaining_risk": result.after.risky,
+                "combos": result.after.combos,
+                # ④ 처리 전후 객체 비교 (재검증했을 때만)
+                **({"verification": result.verification} if result.verification else {}),
             },
         )
     finally:
@@ -209,12 +221,19 @@ async def handle(
             except (OriginalCleanupError, RedisConnectionError, RedisTimeoutError):
                 raise
             except Exception as error:
-                logger.warning("job %s failed (%s)", msg.job_id, type(error).__name__)
+                # AIServiceError·PolicyViolation 메시지에는 키·원문이 없다. 다른 예외는 이름만.
+                safe = isinstance(error, (AIServiceError, PolicyViolation))
+                reason = f": {error}" if safe else ""
+                logger.warning("job %s failed (%s%s)", msg.job_id, type(error).__name__, reason)
                 result = ResultMessage(
                     job_id=msg.job_id,
                     execution_id=msg.execution_id,
                     status="FAILED",
-                    error="처리하지 못했습니다. 원본 파일을 다시 업로드해 주세요",
+                    error=(
+                        str(error)
+                        if isinstance(error, PolicyViolation)
+                        else "처리하지 못했습니다. 원본 파일을 다시 업로드해 주세요"
+                    ),
                 )
             await redis.setex(
                 f"{key}:result", settings.progress_ttl_seconds, result.model_dump_json()

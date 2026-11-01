@@ -20,3 +20,9 @@ models/
 .idea/
 .vscode/
 .DS_Store
+
+# scripts/odyssey_eval.py, make_output.py 결과
+eval_data/
+out_eval/
+output*.jpg
+output*_result.json

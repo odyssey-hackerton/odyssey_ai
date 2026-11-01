@@ -1,5 +1,6 @@
 import socket
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +17,32 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr | None = None
     gemini_model: str = "gemini-3.8-flash"
     gemini_timeout_seconds: int = Field(default=90, ge=1, le=300)
+
+    # ① 탐지(에이전트1) VLM 제공자: gemini (기본) | qwen (vLLM OpenAI 호환 서버, stages/qwen.py)
+    vlm_provider: Literal["gemini", "qwen"] = "gemini"
+    qwen_base_url: str = "http://localhost:8001/v1"
+    qwen_model: str = "Qwen/Qwen3-VL-8B-Instruct"
+    qwen_api_key: SecretStr | None = None
+
+    # ① 탐지(에이전트1) 로컬 모델. 모델이 없으면 해당 모듈만 건너뛴다.
+    detect_use_vlm: bool = True  # False 면 Gemini 를 호출하지 않고 OCR·PII·EXIF 만 쓴다
+    detect_use_ocr: bool = (
+        False  # True 면 PaddleOCR 로컬 OCR 도 돌린다 (기본은 Gemini 가 글자까지 읽음)
+    )
+    veil_dir: str = "models/veil"  # hf download 1T/veil-pii-ko-lite --local-dir models/veil
+    paddle_device: str = "cpu"  # "cpu" | "gpu:0"
+    paddle_mkldnn: bool = False  # CPU oneDNN 가속. std::exception 이 나면 False 유지
+
+    # ② 위험 분석: 객체별 판정·조합 경고에 VLM 을 쓸지 (VLM_PROVIDER 를 따른다).
+    # false 면 ① 의 risk_level 로만 계산한다.
+    risk_use_vlm: bool = True
+
+    # ⓪ 맥락: 국가+날짜의 사회 이슈 (stages/context.py). 키가 없으면 고정 규칙만 쓴다.
+    tavily_api_key: SecretStr | None = None
+    context_use_search: bool = True
+    context_country: str = "KR"
+    context_timezone: str = "Asia/Seoul"
+    context_timeout_seconds: int = Field(default=15, ge=1, le=120)
 
     # 일반 서버의 Redis (사설 IP). 예: redis://:비밀번호@10.1.1.27:6379/0
     redis_url: str = "redis://localhost:6379/0"

@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from stages import risk
 from stages.types import Assessment, Media
 from worker.config import Settings
 from worker.contract import JobMessage, JobStatus, ResultMessage
@@ -99,7 +100,7 @@ async def test_detection_waits_for_user(input_type, has_image, text, monkeypatch
     """각 입력은 탐지 결과를 먼저 반환하고 사용자 선택을 기다린다."""
     from unittest.mock import AsyncMock
 
-    monkeypatch.setattr("worker.pipeline.detect", AsyncMock(return_value=[]))
+    monkeypatch.setattr("stages.risk.detect", AsyncMock(return_value=[]))
     storage, redis = FakeStorage(), FakeRedis()
     key = None
     if has_image:
@@ -121,19 +122,19 @@ async def test_pipeline_loops_until_safe(monkeypatch):
 
     calls = {"analyze": 0}
 
-    async def fake_detect(media):
+    async def fake_detect(media, watchlist=None):
         return [{"type": "phone_number"}]
 
-    async def fake_analyze(media, findings):
+    async def fake_analyze(media, findings, *_):
         calls["analyze"] += 1
         risky = calls["analyze"] < 3  # 처음 분석 + 1회차 재검증은 위험, 2회차에 안전
         return Assessment(risky=risky, risk=0.8 if risky else 0.1, findings=findings)
 
-    async def fake_transform(media, assessment):
+    async def fake_transform(media, assessment, patches=None):
         return Media(text="masked")
 
-    monkeypatch.setattr(p, "detect", fake_detect)
-    monkeypatch.setattr(p, "analyze", fake_analyze)
+    monkeypatch.setattr(risk, "detect", fake_detect)
+    monkeypatch.setattr(risk, "analyze", fake_analyze)
     monkeypatch.setattr(p, "transform", fake_transform)
 
     seen = []
@@ -151,14 +152,14 @@ async def test_pipeline_loops_until_safe(monkeypatch):
 async def test_pipeline_stops_at_max_iterations(monkeypatch):
     import worker.pipeline as p
 
-    async def always_risky(media, findings):
+    async def always_risky(media, findings, *_):
         return Assessment(risky=True, risk=0.9)
 
     from unittest.mock import AsyncMock
 
-    monkeypatch.setattr(p, "detect", AsyncMock(return_value=[]))
+    monkeypatch.setattr(risk, "detect", AsyncMock(return_value=[]))
     monkeypatch.setattr(p, "transform", AsyncMock(return_value=Media(text="x")))
-    monkeypatch.setattr(p, "analyze", always_risky)
+    monkeypatch.setattr(risk, "analyze", always_risky)
 
     async def report(*a, **k):
         pass

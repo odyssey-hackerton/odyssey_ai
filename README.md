@@ -1,6 +1,6 @@
 # odyssey_ai
 
-GPU 서버에서 도는 AI 워커입니다. 일반 서버의 Redis에서 작업을 가져와 ① 탐지 → ② 위험 분석 → ③ 변환 → ② 재검증(최대 3회)을 거쳐 결과를 돌려보냅니다. 협업 규칙은 [CONTRIBUTING.md](CONTRIBUTING.md)를 보세요.
+GPU 서버에서 도는 AI 워커입니다. 일반 서버의 Redis에서 작업을 가져와 ① 탐지 → ② 위험 분석 → ③ 보호 정책(에이전트3) → 사용자 선택 → ③ 변환 → ② 재검증을 거쳐 결과를 돌려보냅니다. 협업 규칙은 [CONTRIBUTING.md](CONTRIBUTING.md)를 보세요.
 
 합성 자료 테스트용으로 **Gemini 사진·본문 탐지와 재검증**을 연결했습니다. 최초 분석은 `AWAITING_USER`로 반환하고, 사용자가 선택하면 서버에서 실제 픽셀 가림·블러·본문 삭제 후 한 번 재검증합니다. 남은 단서는 사용자에게 보여줍니다. 생성형 지우기·간판 교체는 미구현이며 사진 `remove`는 단색 가림입니다.
 
@@ -16,21 +16,86 @@ API ◀──────── Redis results ◀──XADD──── worker.m
 
 워커는 Redis(일반 서버 사설 IP, 6379), S3와 Gemini HTTPS API에 접속합니다. 이 구성에는 GPU가 필요하지 않습니다. Postgres에는 접속하지 않고, 들어오는 포트도 열 필요가 없습니다.
 
+## 실행 방법
+
+### 1. 설치
+
+필요: Python 3.12, [uv](https://docs.astral.sh/uv/), git
+
+```bash
+git clone https://github.com/odyssey-hackerton/odyssey_ai.git
+cd odyssey_ai
+./scripts/setup-git-hooks.sh                # 커밋 규칙 훅 (기여할 때만)
+uv sync                                     # 의존성 설치
+uv run bash scripts/download-models.sh      # PII 모델(Veil) + PaddleOCR 캐시 (선택)
+```
+
+### 2. 환경 설정
+
+```bash
+cp .env.example .env
+```
+
+`.env` 에서 최소한 아래를 채운다.
+
+| 변수 | 값 | 필수 |
+|---|---|---|
+| `GEMINI_API_KEY` | 무료 프로젝트 Gemini 키 | 필수 (VLM 기본 경로) |
+| `TAVILY_API_KEY` | Tavily 키 | 선택 (⓪ 맥락 검색, 없으면 고정 규칙만) |
+| `VLM_PROVIDER` | `gemini`(기본) 또는 `qwen` | 선택 |
+| `QWEN_BASE_URL`, `QWEN_MODEL` | `http://localhost:8001/v1`, `Qwen/Qwen3-VL-8B-Instruct` | `qwen` 일 때 |
+| `REDIS_URL`, `AWS_*` | 일반 서버 Redis·S3 | 워커(`worker.main`) 실행할 때만 |
+
+Qwen 을 쓰려면 GPU 서버에서 먼저 띄운다:
+
+```bash
+vllm serve Qwen/Qwen3-VL-8B-Instruct --port 8001 --max-model-len 16384 --limit-mm-per-prompt '{"image":1}'
+```
+
+### 3. 실행
+
+```bash
+# 사진 한 장 처리: ⓪①② 분석 → ③ 보호 처리 → ④ 재검증
+uv run python scripts/make_output.py test.jpg output.jpg
+#   → output.jpg, output_result.json, output_steps/ (탐지 박스·처리 결과·재검증 상태)
+
+# 여러 장 ③ 처리 결과만
+uv run python scripts/batch_output.py 사진폴더/ -o out_eval/outputs
+
+# 성능 평가
+uv run python scripts/judge_eval.py --only gemini     # 채점관 모델 평가 → out_eval/tables_judge.md
+uv run python scripts/odyssey_eval.py --only gemini   # DIPA2 샘플 평가 → out_eval/tables.md
+
+# 워커 (백엔드 Redis 큐 연결)
+uv run python -m worker.check
+uv run python -m worker.main
+
+# 테스트·린트
+uv run pytest
+uv run ruff check . && uv run ruff format .
+```
+
 ## 폴더 구조
 
 ```
 stages/          ← AI 팀 작업 영역
   detect.py      ① 탐지 (PaddleOCR, 얼굴, EXIF, 글)
   risk.py        ② 위험 분석·재검증
-  transform.py   ③ 변환 (블러, 마스킹, EXIF 제거)
+  protect.py     ③ 에이전트3 정책: 편집 도구 분류(category)·추천 action·policy, 사용자 편집 검사
+  transform.py   ③ 에이전트3 렌더: 가림·블러·모자이크·부분마스킹·텍스트제거(인페인팅)·생성 패치 합성, EXIF 제거
   types.py       Media(사진·글), Assessment(위험도·탐지 항목)
 worker/
   main.py        작업 받기 → 처리 → 결과 보내기 (수정할 일 거의 없음)
   pipeline.py    단계 순서와 반복 규칙
   contract.py    백엔드와 주고받는 메시지 형식 (백엔드와 같게 유지)
   check.py       통신 확인 (Redis, S3)
-  queue.py       Redis 연결·진행 상태·결과 전송
+  queue.py       Redis 연결·진행 상태·결과 전송, 이미지재생성 패치 읽기
   storage.py     S3 읽기·쓰기
+scripts/
+  make_output.py     사진 한 장 → 처리 결과 + 단계별 사진
+  batch_output.py    여러 장 → ③ 처리 결과만
+  judge_eval.py      채점관 모델(LLM-as-a-judge) 평가
+  odyssey_eval.py    DIPA2 샘플 평가 (dipa2_sample20.json)
 ```
 
 입력 종류(`input_type`)는 세 가지이고 `Media`에 그대로 들어옵니다.
@@ -47,6 +112,37 @@ worker/
 2. 탐지 항목(`findings`)은 `type`, `source`, `bbox`, `score`, `action` 키를 쓰고, 필요하면 다른 키를 더 넣어도 됩니다. 백엔드가 그대로 저장해서 리포트에 보여줍니다.
 3. 모델 라이브러리를 추가했으면 `uv add <패키지>`로 `pyproject.toml`과 `uv.lock`을 함께 갱신합니다.
 4. GPU를 쓰게 되면 `Dockerfile`의 베이스 이미지를 CUDA 이미지로 바꾸고, 실행할 때 `--gpus all`을 붙입니다.
+
+## ③ 보호 편집 (에이전트3)
+
+프론트 편집 화면은 그대로이고, 변환 도구가 워커 안으로 들어왔다.
+
+- **Phase 1 끝(`AWAITING_USER`)**: `stages/protect.py` 가 findings 마다 `category`(`text`|`object`|`location`, 프론트 도구 분류), 추천 `action`, `policy`(level·허용 action·최초 영역·축소/삭제/부분마스킹 가능 여부)를 붙인다. ② 의 8분류는 `risk_category` 로 보존한다. `rrn`·`id_card`·`account_number`·`card_number`·`delivery_label`·`apt_dong_ho` 는 `locked`(전체 가림만), `risk_level=high` 는 축소·× 삭제·부분마스킹 불가.
+- **Phase 2**: `user_choices[]` 에 `action`(mask/blur/mosaic/partialMask/remove/regenerate/skip)·`bbox`·`mask_box`·`generation_id` 가 온다. 정책보다 약한 선택은 `PolicyViolation` 으로 작업을 `FAILED` 처리하고 메시지를 그대로 돌려준다(백엔드가 같은 규칙으로 먼저 422 를 낸다). `stages/transform.py` 가 프론트 미리보기(`media.ts`)와 같은 규칙으로 최종 픽셀을 그린다: 16px 고정 강도, 단색 `(20,33,56)`, 부분마스킹은 영역 안 상대 좌표, 텍스트제거는 OpenCV Telea 인페인팅(24px 패딩·512px 상한), 복원형(remove/regenerate)을 먼저 그려 불투명 보호를 덮지 못하게 한다.
+- **이미지재생성**: Gemini 호출은 그대로 백엔드 `POST /api/images/regenerate` 가 한다. 백엔드가 결과 패치를 Redis `generation:{id}` 에 24시간 보관하고, 사용자가 적용하면 `generation_id` 가 Phase 2 로 와서 `worker/queue.py load_patches` 가 읽어 같은 픽셀을 합성한다. 만료됐으면 그 영역은 가림으로 대체한다.
+
+## ① 탐지 모델 (에이전트1)
+
+`stages/detect.py`는 Gemini(VLM) 외에 로컬 모델 세 가지를 함께 쓴다. 모델이 없으면 그 모듈만 건너뛴다.
+
+| 모듈 | 기술 | 준비 |
+|---|---|---|
+| OCR | PaddleOCR PP-OCRv5 korean | `uv sync` 로 설치, 모델은 아래 스크립트가 캐시 |
+| PII | Veil-PII-Ko-Lite(ONNX INT8) + ko-pii(체크섬) + 정규식 | `models/veil/` 에 다운로드 |
+| EXIF | Pillow | 없음 |
+| VLM | Gemini (`GEMINI_API_KEY`) | 기본 경로. 객체·장면·글자까지 읽는다. `DETECT_USE_VLM=false` 면 호출 안 함 |
+
+VLM 은 `VLM_PROVIDER` 로 바꾼다: `gemini`(기본, 무료 키) 또는 `qwen`(GPU 서버에서 `vllm serve Qwen/Qwen3-VL-8B-Instruct --port 8001` 로 띄운 로컬 모델, `stages/qwen.py`). 프롬프트·JSON 스키마는 공통이라 `detect.py` 는 바뀌지 않는다.
+
+기본값은 **Gemini + 텍스트 PII + EXIF** 다. PaddleOCR 은 `DETECT_USE_OCR=true` 일 때만 돌며,
+CPU 빌드에서 `RuntimeError: std::exception` 이 나면 `PADDLE_MKLDNN=false`(기본) 또는 GPU 빌드를 쓴다.
+
+```bash
+uv sync
+uv run bash scripts/download-models.sh   # Veil 다운로드(~150MB) + PP-OCRv5 korean 캐시
+```
+
+GPU 서버에서 OCR 을 GPU 로 돌리려면 `uv pip install paddlepaddle-gpu==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/` 후 `PADDLE_DEVICE=gpu:0`. CPU 로도 사진 1장 1초 안팎이라 데모에는 CPU 로 충분하다.
 
 ## 로컬 개발
 

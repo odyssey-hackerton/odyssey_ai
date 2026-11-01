@@ -4,4 +4,5 @@
 !.python-version
 !worker/
 !stages/
+!scripts/download-models.sh
 **/__pycache__
