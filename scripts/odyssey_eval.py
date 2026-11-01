@@ -195,7 +195,7 @@ async def run_context(country, day, runs):
     return out
 
 
-async def run_verify(media, findings):
+async def run_verify(media, findings, stem=None):
     """④: ② 추천 처리 그대로 ③ → ④ 1회 (scripts/make_output.py 와 같은 흐름)."""
     from worker.contract import UserChoice
     from worker.pipeline import run_pipeline
@@ -217,6 +217,17 @@ async def run_verify(media, findings):
         initial_findings=findings,
     )
     v = res.verification or {}
+    if stem:
+        from eval_viz import save_stages
+
+        save_stages(
+            Path("out_eval") / "images",
+            f"{os.environ.get('VLM_PROVIDER')}_{stem}",
+            media.image,
+            findings,
+            res.output.image,
+            v,
+        )
     keys = ("before", "removed", "weakened", "remaining", "kept", "new", "clean", "risk_total")
     return {k: v.get(k) for k in keys} | {
         "risk_before": res.before.risk,
@@ -295,7 +306,7 @@ async def run_image(name, g, media, context, runs, with_verify=True):
             rec["oracle"].append({"error": repr(e)})
     if with_verify and first is not None and first.findings:
         try:
-            rec["verify"] = await run_verify(media, first.findings)
+            rec["verify"] = await run_verify(media, first.findings, Path(name).stem)
         except Exception as e:
             rec["verify"] = {"error": repr(e)}
     return rec, gts

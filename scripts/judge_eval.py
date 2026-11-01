@@ -165,6 +165,8 @@ async def ask_judge(image_bytes, text, instruction, schema):
 
 
 async def run_one(path):
+    from eval_viz import save_stages
+
     from stages.context import build_context
     from stages.images import open_image
     from stages.types import Media
@@ -224,11 +226,15 @@ async def run_one(path):
             for k in ("before", "removed", "weakened", "remaining", "new", "clean", "risk_total")
         }
         rec["risk_after"] = res.after.risk
+        save_stages(
+            OUT / "judge_images",
+            f"{os.environ.get('VLM_PROVIDER')}_{path.stem}",
+            raw,
+            det.before.findings,
+            res.output.image,
+            res.verification,
+        )
         if res.output.image:
-            OUT.joinpath("judge_images").mkdir(parents=True, exist_ok=True)
-            open_image(res.output.image).convert("RGB").save(
-                OUT / "judge_images" / f"{os.environ.get('VLM_PROVIDER')}_{path.stem}.jpg"
-            )
             rec["judge2"] = await ask_judge(
                 res.output.image, "처리 전 항목:\n" + lines(findings, size), J2, S2
             )
