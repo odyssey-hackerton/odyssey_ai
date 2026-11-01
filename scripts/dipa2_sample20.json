@@ -1,0 +1,906 @@
+{
+ "049cbdf58c353959.jpg": {
+  "source": "OpenImages",
+  "dominant_type": "personal_info",
+  "max_severity": 5.0,
+  "objects": [
+   {
+    "bbox_xywh": [
+     441,
+     641,
+     129,
+     72
+    ],
+    "label": "Vehicle registration plate",
+    "votes": 2,
+    "severity_mean": 5.0,
+    "info_types": {
+     "personal_info": 2
+    }
+   },
+   {
+    "bbox_xywh": [
+     158,
+     378,
+     691,
+     423
+    ],
+    "label": "Car",
+    "votes": 1,
+    "severity_mean": 6.0,
+    "info_types": {
+     "personal_info": 1,
+     "social_circle": 1
+    }
+   }
+  ]
+ },
+ "078fd57f81047cf3.jpg": {
+  "source": "OpenImages",
+  "dominant_type": "personal_info",
+  "max_severity": 5.5,
+  "objects": [
+   {
+    "bbox_xywh": [
+     9,
+     42,
+     120,
+     169
+    ],
+    "label": "Human head",
+    "votes": 3,
+    "severity_mean": 4.33,
+    "info_types": {
+     "personal_info": 3
+    }
+   },
+   {
+    "bbox_xywh": [
+     132,
+     0,
+     436,
+     593
+    ],
+    "label": "Girl",
+    "votes": 2,
+    "severity_mean": 5.5,
+    "info_types": {
+     "personal_info": 2,
+     "location": 2,
+     "social_circle": 2
+    }
+   },
+   {
+    "bbox_xywh": [
+     0,
+     191,
+     211,
+     371
+    ],
+    "label": "Clothing",
+    "votes": 1,
+    "severity_mean": 6.0,
+    "info_types": {
+     "personal_info": 1,
+     "social_circle": 1,
+     "others_private": 1
+    }
+   }
+  ]
+ },
+ "184b17c89a7514be.jpg": {
+  "source": "OpenImages",
+  "dominant_type": "personal_info",
+  "max_severity": 5.5,
+  "objects": [
+   {
+    "bbox_xywh": [
+     182,
+     19,
+     430,
+     363
+    ],
+    "label": "identity",
+    "votes": 4,
+    "severity_mean": 5.5,
+    "info_types": {
+     "personal_info": 2,
+     "social_circle": 1,
+     "others_private": 1,
+     "location": 1,
+     "preferences": 2
+    }
+   }
+  ]
+ },
+ "02af9804c6b68f61.jpg": {
+  "source": "OpenImages",
+  "dominant_type": "personal_info",
+  "max_severity": 4.5,
+  "objects": [
+   {
+    "bbox_xywh": [
+     0,
+     166,
+     431,
+     226
+    ],
+    "label": "Car",
+    "votes": 2,
+    "severity_mean": 4.5,
+    "info_types": {
+     "personal_info": 2,
+     "social_circle": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     135,
+     104,
+     234,
+     513
+    ],
+    "label": "Person",
+    "votes": 2,
+    "severity_mean": 4.5,
+    "info_types": {
+     "personal_info": 2,
+     "preferences": 1
+    }
+   }
+  ]
+ },
+ "efad8f80fa7a7c79.jpg": {
+  "source": "OpenImages",
+  "dominant_type": "location",
+  "max_severity": 4.25,
+  "objects": [
+   {
+    "bbox_xywh": [
+     0,
+     0,
+     1022,
+     766
+    ],
+    "label": "House",
+    "votes": 4,
+    "severity_mean": 4.25,
+    "info_types": {
+     "location": 3,
+     "social_circle": 3
+    }
+   }
+  ]
+ },
+ "034143ae71047bbc.jpg": {
+  "source": "OpenImages",
+  "dominant_type": "location",
+  "max_severity": 4.5,
+  "objects": [
+   {
+    "bbox_xywh": [
+     171,
+     107,
+     504,
+     997
+    ],
+    "label": "identity",
+    "votes": 3,
+    "severity_mean": 4.0,
+    "info_types": {
+     "social_circle": 1,
+     "personal_info": 1,
+     "location": 2,
+     "preferences": 1,
+     "others_private": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     137,
+     374,
+     108,
+     77
+    ],
+    "label": "Object 0",
+    "votes": 2,
+    "severity_mean": 4.5,
+    "info_types": {
+     "social_circle": 1,
+     "personal_info": 1,
+     "location": 1,
+     "preferences": 1
+    }
+   }
+  ]
+ },
+ "03feb3e6845bc3aa.jpg": {
+  "source": "OpenImages",
+  "dominant_type": "location",
+  "max_severity": 5.33,
+  "objects": [
+   {
+    "bbox_xywh": [
+     0,
+     513,
+     212,
+     510
+    ],
+    "label": "Clothing",
+    "votes": 3,
+    "severity_mean": 4.33,
+    "info_types": {
+     "personal_info": 2,
+     "location": 2,
+     "preferences": 2,
+     "social_circle": 1,
+     "others_private": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     228,
+     136,
+     435,
+     755
+    ],
+    "label": "Man",
+    "votes": 3,
+    "severity_mean": 5.33,
+    "info_types": {
+     "personal_info": 2,
+     "location": 3,
+     "social_circle": 2,
+     "others_private": 1
+    }
+   }
+  ]
+ },
+ "9ba50cb2198a23d8.jpg": {
+  "source": "OpenImages",
+  "dominant_type": "location",
+  "max_severity": 5.5,
+  "objects": [
+   {
+    "bbox_xywh": [
+     209,
+     118,
+     499,
+     649
+    ],
+    "label": "Skyscraper",
+    "votes": 2,
+    "severity_mean": 5.5,
+    "info_types": {
+     "personal_info": 1,
+     "location": 2
+    }
+   },
+   {
+    "bbox_xywh": [
+     0,
+     120,
+     1024,
+     638
+    ],
+    "label": "Building",
+    "votes": 2,
+    "severity_mean": 5.5,
+    "info_types": {
+     "personal_info": 1,
+     "location": 2
+    }
+   },
+   {
+    "bbox_xywh": [
+     211,
+     147,
+     185,
+     513
+    ],
+    "label": "Tower",
+    "votes": 2,
+    "severity_mean": 5.5,
+    "info_types": {
+     "personal_info": 1,
+     "location": 2
+    }
+   },
+   {
+    "bbox_xywh": [
+     0,
+     595,
+     8,
+     22
+    ],
+    "label": "Window",
+    "votes": 2,
+    "severity_mean": 4.0,
+    "info_types": {
+     "personal_info": 2,
+     "location": 1,
+     "social_circle": 1,
+     "others_private": 1
+    }
+   }
+  ]
+ },
+ "1296.jpg": {
+  "source": "LVIS",
+  "dominant_type": "social_circle",
+  "max_severity": 4.0,
+  "objects": [
+   {
+    "bbox_xywh": [
+     250,
+     321,
+     47,
+     72
+    ],
+    "label": "cellular_telephone",
+    "votes": 2,
+    "severity_mean": 4.0,
+    "info_types": {
+     "social_circle": 1,
+     "preferences": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     342,
+     383,
+     71,
+     45
+    ],
+    "label": "watch",
+    "votes": 1,
+    "severity_mean": 4.0,
+    "info_types": {
+     "social_circle": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     246,
+     329,
+     21,
+     17
+    ],
+    "label": "ring",
+    "votes": 1,
+    "severity_mean": 4.0,
+    "info_types": {
+     "social_circle": 1,
+     "other": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     25,
+     18,
+     390,
+     555
+    ],
+    "label": "Object 0",
+    "votes": 1,
+    "severity_mean": 6.0,
+    "info_types": {
+     "personal_info": 1,
+     "social_circle": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     83,
+     13,
+     213,
+     300
+    ],
+    "label": "Object 1",
+    "votes": 1,
+    "severity_mean": 6.0,
+    "info_types": {
+     "personal_info": 1
+    }
+   }
+  ]
+ },
+ "14038.jpg": {
+  "source": "LVIS",
+  "dominant_type": "social_circle",
+  "max_severity": 4.5,
+  "objects": [
+   {
+    "bbox_xywh": [
+     15,
+     152,
+     129,
+     274
+    ],
+    "label": "refrigerator",
+    "votes": 2,
+    "severity_mean": 4.5,
+    "info_types": {
+     "social_circle": 2,
+     "personal_info": 1,
+     "location": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     505,
+     208,
+     44,
+     8
+    ],
+    "label": "book",
+    "votes": 1,
+    "severity_mean": 5.0,
+    "info_types": {
+     "social_circle": 1
+    }
+   }
+  ]
+ },
+ "168134.jpg": {
+  "source": "LVIS",
+  "dominant_type": "social_circle",
+  "max_severity": 4.5,
+  "objects": [
+   {
+    "bbox_xywh": [
+     279,
+     146,
+     90,
+     154
+    ],
+    "label": "pet",
+    "votes": 3,
+    "severity_mean": 2.67,
+    "info_types": {
+     "personal_info": 1,
+     "social_circle": 2,
+     "other": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     149,
+     227,
+     4,
+     4
+    ],
+    "label": "earring",
+    "votes": 2,
+    "severity_mean": 4.5,
+    "info_types": {
+     "social_circle": 1,
+     "preferences": 1
+    }
+   }
+  ]
+ },
+ "107656.jpg": {
+  "source": "LVIS",
+  "dominant_type": "preferences",
+  "max_severity": 4.33,
+  "objects": [
+   {
+    "bbox_xywh": [
+     368,
+     291,
+     83,
+     41
+    ],
+    "label": "box",
+    "votes": 3,
+    "severity_mean": 4.33,
+    "info_types": {
+     "social_circle": 1,
+     "location": 1,
+     "preferences": 2,
+     "other": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     173,
+     209,
+     83,
+     46
+    ],
+    "label": "dog",
+    "votes": 3,
+    "severity_mean": 4.33,
+    "info_types": {
+     "social_circle": 1,
+     "personal_info": 1,
+     "preferences": 1,
+     "other": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     3,
+     1,
+     493,
+     373
+    ],
+    "label": "Object 0",
+    "votes": 3,
+    "severity_mean": 4.33,
+    "info_types": {
+     "social_circle": 1,
+     "location": 1,
+     "preferences": 1,
+     "other": 1
+    }
+   }
+  ]
+ },
+ "6e58d8b2c269091b.jpg": {
+  "source": "OpenImages",
+  "dominant_type": "preferences",
+  "max_severity": 4.5,
+  "objects": [
+   {
+    "bbox_xywh": [
+     175,
+     96,
+     848,
+     479
+    ],
+    "label": "Parrot",
+    "votes": 2,
+    "severity_mean": 4.5,
+    "info_types": {
+     "social_circle": 1,
+     "location": 1,
+     "preferences": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     789,
+     453,
+     206,
+     172
+    ],
+    "label": "Book",
+    "votes": 1,
+    "severity_mean": 5.0,
+    "info_types": {
+     "preferences": 1
+    }
+   }
+  ]
+ },
+ "29715.jpg": {
+  "source": "LVIS",
+  "dominant_type": "preferences",
+  "max_severity": 4.0,
+  "objects": [
+   {
+    "bbox_xywh": [
+     461,
+     107,
+     58,
+     67
+    ],
+    "label": "signboard",
+    "votes": 2,
+    "severity_mean": 4.0,
+    "info_types": {
+     "location": 2,
+     "preferences": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     164,
+     169,
+     99,
+     225
+    ],
+    "label": "dress",
+    "votes": 2,
+    "severity_mean": 3.5,
+    "info_types": {
+     "social_circle": 1,
+     "preferences": 1,
+     "other": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     385,
+     583,
+     122,
+     42
+    ],
+    "label": "shoe",
+    "votes": 2,
+    "severity_mean": 2.0,
+    "info_types": {
+     "social_circle": 1,
+     "preferences": 1
+    }
+   }
+  ]
+ },
+ "709340946095cf0d.jpg": {
+  "source": "OpenImages",
+  "dominant_type": "others_private",
+  "max_severity": 5.0,
+  "objects": [
+   {
+    "bbox_xywh": [
+     302,
+     259,
+     219,
+     380
+    ],
+    "label": "Person",
+    "votes": 5,
+    "severity_mean": 4.8,
+    "info_types": {
+     "others_private": 2,
+     "personal_info": 3
+    }
+   },
+   {
+    "bbox_xywh": [
+     0,
+     0,
+     1022,
+     766
+    ],
+    "label": "Office building",
+    "votes": 3,
+    "severity_mean": 5.0,
+    "info_types": {
+     "location": 3,
+     "others_private": 1
+    }
+   }
+  ]
+ },
+ "313240.jpg": {
+  "source": "LVIS",
+  "dominant_type": "others_private",
+  "max_severity": 5.0,
+  "objects": [
+   {
+    "bbox_xywh": [
+     365,
+     207,
+     157,
+     114
+    ],
+    "label": "Object 0",
+    "votes": 3,
+    "severity_mean": 4.33,
+    "info_types": {
+     "social_circle": 2,
+     "others_private": 3,
+     "personal_info": 1,
+     "preferences": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     163,
+     272,
+     92,
+     25
+    ],
+    "label": "book",
+    "votes": 2,
+    "severity_mean": 5.0,
+    "info_types": {
+     "social_circle": 1,
+     "preferences": 1,
+     "others_private": 1
+    }
+   }
+  ]
+ },
+ "105804.jpg": {
+  "source": "LVIS",
+  "dominant_type": "others_private",
+  "max_severity": 4.25,
+  "objects": [
+   {
+    "bbox_xywh": [
+     354,
+     60,
+     144,
+     159
+    ],
+    "label": "monitor_(computer_equipment) computer_monitor",
+    "votes": 4,
+    "severity_mean": 4.25,
+    "info_types": {
+     "location": 1,
+     "social_circle": 2,
+     "personal_info": 2,
+     "others_private": 2,
+     "preferences": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     4,
+     349,
+     149,
+     107
+    ],
+    "label": "Manual Label",
+    "votes": 2,
+    "severity_mean": 4.0,
+    "info_types": {
+     "personal_info": 1,
+     "social_circle": 1,
+     "others_private": 2
+    }
+   }
+  ]
+ },
+ "114759.jpg": {
+  "source": "LVIS",
+  "dominant_type": "personal_info",
+  "max_severity": 2.0,
+  "objects": [
+   {
+    "bbox_xywh": [
+     256,
+     237,
+     11,
+     9
+    ],
+    "label": "wristband",
+    "votes": 2,
+    "severity_mean": 2.0,
+    "info_types": {
+     "personal_info": 2
+    }
+   },
+   {
+    "bbox_xywh": [
+     279,
+     222,
+     53,
+     20
+    ],
+    "label": "camera_lens",
+    "votes": 1,
+    "severity_mean": 3.0,
+    "info_types": {
+     "personal_info": 1,
+     "location": 1,
+     "others_private": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     110,
+     298,
+     96,
+     48
+    ],
+    "label": "short_pants",
+    "votes": 1,
+    "severity_mean": 2.0,
+    "info_types": {
+     "personal_info": 1,
+     "location": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     261,
+     220,
+     71,
+     46
+    ],
+    "label": "camera",
+    "votes": 1,
+    "severity_mean": 2.0,
+    "info_types": {
+     "personal_info": 1,
+     "location": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     158,
+     81,
+     54,
+     118
+    ],
+    "label": "tennis_racket",
+    "votes": 1,
+    "severity_mean": 2.0,
+    "info_types": {
+     "personal_info": 1,
+     "location": 1,
+     "others_private": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     90,
+     190,
+     81,
+     127
+    ],
+    "label": "polo_shirt",
+    "votes": 1,
+    "severity_mean": 2.0,
+    "info_types": {
+     "personal_info": 1,
+     "location": 1
+    }
+   },
+   {
+    "bbox_xywh": [
+     8,
+     254,
+     324,
+     102
+    ],
+    "label": "signboard",
+    "votes": 1,
+    "severity_mean": 2.0,
+    "info_types": {
+     "location": 1
+    }
+   }
+  ]
+ },
+ "003775320f1d6937.jpg": {
+  "source": "OpenImages",
+  "dominant_type": "location",
+  "max_severity": 1.0,
+  "objects": [
+   {
+    "bbox_xywh": [
+     0,
+     98,
+     683,
+     925
+    ],
+    "label": "Furniture",
+    "votes": 2,
+    "severity_mean": 1.0,
+    "info_types": {
+     "location": 2,
+     "preferences": 2
+    }
+   }
+  ]
+ },
+ "237064.jpg": {
+  "source": "LVIS",
+  "dominant_type": "personal_info",
+  "max_severity": 1.67,
+  "objects": [
+   {
+    "bbox_xywh": [
+     262,
+     237,
+     73,
+     81
+    ],
+    "label": "Object 1",
+    "votes": 3,
+    "severity_mean": 1.67,
+    "info_types": {
+     "personal_info": 3,
+     "location": 1,
+     "social_circle": 1
+    }
+   }
+  ]
+ }
+}
